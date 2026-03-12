@@ -1,0 +1,25 @@
+# --- Core Deep Learning & Hydrology ---
+neuralhydrology==1.1.0
+torch>=2.4.0
+torchaudio
+torchvision
+
+# --- Data Science Stack ---
+numpy>=2.0.0
+pandas>=2.2.0
+scipy>=1.13.0
+pyyaml>=6.0.1
+python-dateutil==2.9.0.post0
+pytz==2025.2
+tzdata==2025.3
+
+# --- Geospatial Analysis (For Shapefiles) ---
+geopandas>=1.0.0
+shapely>=2.0.0
+pyproj>=3.6.0
+
+# --- Utilities & Visualization ---
+tqdm>=4.66.0
+colorama==0.4.6
+tensorboard>=2.17.0
+matplotlib>=3.9.0
