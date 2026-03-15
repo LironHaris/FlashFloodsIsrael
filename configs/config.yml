@@ -228,6 +228,7 @@ dataset: generic
 
 # Path to data set root
 data_dir: ./data
+static_attributes_file: data/processed/static_attributes_nh.csv
 
 # Set to True, if train data file should be save to disk. If empty or False, train data is not saved.
 save_train_data: False
