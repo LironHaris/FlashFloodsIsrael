@@ -12,9 +12,9 @@ experiment_name: israel_flash_floods_ealstm_v1
 run_dir: ./runs/
 
 # files to specify training, validation and test basins (relative to code root or absolute path)
-train_basin_file: configs/basin_lists/israel_train.txt
-validation_basin_file: configs/basin_lists/israel_val.txt
-test_basin_file: configs/basin_lists/israel_test.txt
+train_basin_file: data/basin_lists/israel_train.txt
+validation_basin_file: data/basin_lists/israel_val.txt
+test_basin_file: data/basin_lists/israel_test.txt
 
 # training, validation and test time periods (format = 'dd/mm/yyyy')
 train_start_date: '01/10/1999'
@@ -228,8 +228,11 @@ dataset: generic
 
 # Path to data set root
 data_dir: ./data
-static_attributes_file: data/processed/static_attributes_nh.csv
+static_attributes_file: data/processed/static/static_attributes_nh.csv
 
+generic_data_config:
+  time_series_path: processed/timeseries/
+  
 # Set to True, if train data file should be save to disk. If empty or False, train data is not saved.
 save_train_data: False
 
@@ -250,11 +253,7 @@ forcings: maurer_extended
 #   1h:
 #     - total_precipitation_nldas_hourly
 dynamic_inputs:
-- prcp(mm/day)
-- srad(W/m2)
-- tmax(C)
-- tmin(C)
-- vp(Pa)
+- mean_rain
 
 # which columns to use as target
 target_variables:
