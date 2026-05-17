@@ -1,44 +1,71 @@
 import pandas as pd
 import numpy as np
 import os
+import yaml
 
-def load_and_merge(caravan_path="data/raw/attributes_caravan_il.csv", hydroatlas_path="data/raw/attributes_hydroatlas_il.csv"):
+def load_config(yaml_path):
+    """Load the YAML configuration file."""
+    with open(yaml_path, 'r', encoding='utf-8') as file:
+        return yaml.safe_load(file)
+
+def load_and_merge(raw_static_dir):
     """
-    Load source CSV files from the raw directory and perform an inner merge on 'gauge_id'.
+    Load source CSV files from the raw static directory and merge them on 'gauge_id', 
+    including only the 'area' feature from the third source.
     """
-    if not os.path.exists(caravan_path) or not os.path.exists(hydroatlas_path):
-        raise FileNotFoundError("Source files missing in data/raw/")
+    caravan_path = os.path.join(raw_static_dir, 'attributes_caravan_il.csv')
+    hydroatlas_path = os.path.join(raw_static_dir, 'attributes_hydroatlas_il.csv')
+    other_path = os.path.join(raw_static_dir, 'attributes_other_il.csv')
     
-    df1 = pd.read_csv(caravan_path)
-    df2 = pd.read_csv(hydroatlas_path)
-    return pd.merge(df1, df2, on='gauge_id', how='inner')
+    df_caravan = pd.read_csv(caravan_path)
+    df_hydroatlas = pd.read_csv(hydroatlas_path)
+    df_other = pd.read_csv(other_path)[['gauge_id', 'area']]
+    
+    # Inner join ensures we only keep basins present across all metadata files
+    merged = pd.merge(df_caravan, df_hydroatlas, on='gauge_id', how='inner')
+    merged = pd.merge(merged, df_other, on='gauge_id', how='inner')
+    
+    return merged
 
 def clean_missing_features(df):
     """
     Remove all columns containing any missing values to ensure compatibility with NeuralHydrology.
+    Logs a warning with the names of any dropped features.
     """
     ids = df[['gauge_id']]
     features = df.drop(columns=['gauge_id'])
+    
+    # Identify and log features that contain NaNs before dropping them
+    missing_cols = features.columns[features.isna().any()].tolist()
+    if missing_cols:
+        print(f"\n[WARNING] Dropping {len(missing_cols)} static feature(s) due to missing values:")
+        print(f"Dropped columns: {missing_cols}\n")
+    else:
+        print("\n[INFO] No missing values detected in static attributes. All features retained.")
+        
     clean_features = features.dropna(axis=1, how='any')
     
     return pd.concat([ids, clean_features], axis=1)
 
-def main():
+def main(config):
     """
-    Execute the full preprocessing pipeline: merge, clean, and save final attributes and statistics.
+    Execute the full preprocessing pipeline for static attributes: 
+    merge sources, clean missing features, calculate stats, and save outputs.
     """
-    RAW_DIR = os.path.join('data', 'raw')
-    PROCESSED_DIR = os.path.join('data', 'processed')
-    os.makedirs(PROCESSED_DIR, exist_ok=True)
+    # Extract paths from config
+    raw_static_dir = config['raw_static_dir']
+    output_dir = config['processed_static_dir']
+    output_nh = config['static_attributes_file']
+    output_stats = config['feature_stats_file']
 
-    input_caravan = os.path.join(RAW_DIR, 'attributes_caravan_il.csv')
-    input_hydroatlas = os.path.join(RAW_DIR, 'attributes_hydroatlas_il.csv')
-    output_nh = os.path.join(PROCESSED_DIR, 'static_attributes_nh.csv')
-    output_stats = os.path.join(PROCESSED_DIR, 'feature_statistics.csv')
+    # Ensure output directory exists
+    os.makedirs(output_dir, exist_ok=True)
 
-    merged = load_and_merge(input_caravan, input_hydroatlas)
+    # Core pipeline execution
+    merged = load_and_merge(raw_static_dir)
     final_df = clean_missing_features(merged)
     
+    # Compute mean and standard deviation for the remaining numerical features
     numeric_df = final_df.select_dtypes(include=[np.number])
     stats = pd.DataFrame({
         'feature': numeric_df.columns,
@@ -46,8 +73,15 @@ def main():
         'std': numeric_df.std()
     })
     
+    # Save processed files
     final_df.to_csv(output_nh, index=False)
     stats.to_csv(output_stats, index=False)
+    
+    print(f"Static attributes saved to: {output_nh}")
+    print(f"Feature statistics saved to: {output_stats}")
 
 if __name__ == "__main__":
-    main()
+    CONFIG_PATH = "config.yml"
+    
+    yaml_config = load_config(CONFIG_PATH)
+    main(yaml_config)
