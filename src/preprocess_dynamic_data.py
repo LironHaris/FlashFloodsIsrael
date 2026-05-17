@@ -120,7 +120,7 @@ def process_dynamic_data(config):
     print(f"\nSummary report saved to: {report_path}")
 
 if __name__ == "__main__":
-    CONFIG_PATH = "config.yml" 
+    CONFIG_PATH = "configs/config.yml"
     yaml_config = load_config(CONFIG_PATH)
     
     process_dynamic_data(yaml_config)

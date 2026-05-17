@@ -81,7 +81,7 @@ def main(config):
     print(f"Feature statistics saved to: {output_stats}")
 
 if __name__ == "__main__":
-    CONFIG_PATH = "config.yml"
+    CONFIG_PATH = "configs/config.yml"
     
     yaml_config = load_config(CONFIG_PATH)
     main(yaml_config)

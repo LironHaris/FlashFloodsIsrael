@@ -67,7 +67,7 @@ def main(config):
         print(f"[ERROR] Clean static attributes file not found at: {clean_data_path}")
 
 if __name__ == "__main__":
-    CONFIG_PATH = "config.yml"
-    
+    CONFIG_PATH = "configs/config.yml"
     yaml_config = load_config(CONFIG_PATH)
+    
     main(yaml_config)
