@@ -17,7 +17,7 @@ validation_basin_file: data/basin_lists/israel_val.txt
 test_basin_file: data/basin_lists/israel_test.txt
 
 # training, validation and test time periods (format = 'YYYY-MM-DD HH:MM:SS') NOTE: nueral hydrology format = 'dd/mm/yyyy'
-train_start_date: '2008-10-01 08:00:00'
+train_start_date: '2008-10-01 08:00:00' # use only for nueral hydrology
 train_end_date: '2017-09-30 07:00:00'
 
 validation_start_date: '2017-10-01 08:00:00'

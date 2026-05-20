@@ -1,3 +1,38 @@
+"""
+Module: preprocess_static_data.py
+Description: Static Basin Attributes Ingestion, Merging, and Standardization Pipeline.
+
+This script implements a modular preprocessing workflow for static catchment attributes, 
+consolidating raw geographic, physiographic, and climatic characteristics from disparate data 
+sources (Caravan, HydroATLAS, and localized auxiliary records) into a singular, clean dataset.
+
+Pipeline Architecture & Functional Stages:
+1. Heterogeneous Data Merging (Inner Join):
+   Loads raw attribute dataframes and performs consecutive relational inner joins mapped on the 
+   unique basin identifier ('gauge_id'). This structural choice enforces strict alignment, retaining 
+   only the catchments that possess verified records across all metadata source platforms. 
+   From the auxiliary dataset, it isolates and appends only the 'area' feature.
+
+2. Feature Filtration (Missing Data Removal):
+   Identifies and drops entire feature columns containing any missing values (NaNs). 
+   This is a strict mathematical prerequisite for NeuralHydrology and structural architectures 
+   like the EA-LSTM; since static attributes directly parameterize the constant static input gate ,
+   any undefined value would propagate throughout the recurrent hourly time steps, 
+   corrupting the hidden and cell state space updates.
+
+3. Central Tendency & Dispersion Calculation (Feature Statistics):
+   Isolates remaining numerical columns to evaluate localized spatial statistics across all basins:
+   - Feature Mean (mu)
+   - Feature Standard Deviation (sigma)
+   These metrics are exported as a report and serve as the baseline scaling factors for downstream 
+   Z-score feature scaling, preventing features with large numeric ranges (e.g., basin area) 
+   from dominating the loss functions.
+
+Operational Context:
+- This script processes spatial metadata boundaries independent of temporal parameters or 
+  multi-horizon prediction configurations.
+"""
+
 import pandas as pd
 import numpy as np
 import os

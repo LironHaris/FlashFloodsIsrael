@@ -1,3 +1,34 @@
+"""
+Module: calculate_return_periods.py
+Description: Extreme Value Analysis (EVA) Pipeline for Catchment Return Periods.
+
+This script executes an Extreme Value Analysis workflow to calculate empirical and 
+theoretical return periods for streamflow and precipitation across multiple basins. 
+The statistical pipeline is structured into three consecutive steps:
+
+1. Annual Maxima Extraction:
+   Continuous hourly time series are grouped by Hydrological Years (defined dynamically 
+   by 'hydro_year_start_month'). Maxima series are extracted for both block durations:
+   - Hourly Resolutions: Straight maxima aggregation per hydrological year.
+   - Daily Resolutions: Resampled daily (mean flow, cumulative rain) before extracting annual maxima.
+
+2. Empirical Return Period Estimation:
+   Utilizes the non-parametric Weibull Plotting Position formula to evaluate historic exceedance:
+   - Exceedance Probability: P = m / (n + 1)
+   - Empirical Return Period (Years): T = 1 / P
+   Where 'm' is the descending rank of the extreme value, and 'n' is the total record length in years.
+
+3. Theoretical GEV Distribution Fitting:
+   Fits a parametric Generalized Extreme Value (GEV) distribution using Maximum Likelihood Estimation 
+   via scipy.stats.genextreme (c, loc, scale parameters). 
+   Target quantiles for requested lead years are derived using the Inverse Survival Function (ISF):
+   - Theoretical Quantile: x_T = GEV_isf(1 / T, c, loc, scale)
+
+Safeguards & Constraints:
+- Minimal Data Sufficiency: Computations are bypassed via 'min_years_for_gev' if a basin's 
+  valid record length is insufficient to construct stable parametric curves.
+"""
+
 import pandas as pd
 import numpy as np
 import os

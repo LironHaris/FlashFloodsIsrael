@@ -1,6 +1,42 @@
-import pandas as pd
+"""
+Module: preprocess_dynamic_data.py
+Description: Hourly Hydro-Meteorological Data Preprocessing Pipeline.
+
+This script implements a modular preprocessing pipeline designed to ingest raw, irregular 
+catchment observations and standardize them into clean, continuous, hourly time series. 
+The outputs serve as a robust foundational dataset for deep learning rainfall-runoff models.
+
+Pipeline Architecture & Functional Stages:
+1. Hourly Resampling:
+   Transforms raw temporal records into uniform 1-hour block intervals. To preserve the 
+   physical constraints of hydro-meteorological variables, cumulative features (precipitation) 
+   are aggregated using a localized temporal sum, while continuous state features (discharge/flow) 
+   are aggregated via a temporal mean. Bounds are defined using 'left' inclusive indexing.
+
+2. Timeline Realignment & Gap Injection:
+   Enforces a strict, continuous hourly index mapped between the basin's earliest available 
+   dynamic timestamp ('basin_start_date') through the global experiment boundary ('test_end_date'). 
+   Any missing temporal steps or data gaps are explicitly instantiated as NaN cells. 
+   This maximizes historical training data per individual basin.
+
+3. Quantitative Quality Analysis:
+   Evaluates gauge reporting reliability by computing the percentage of valid, non-NaN flow 
+   observations. Crucially, this operation runs on the aligned dataset BEFORE any data filling 
+   takes place. This prevents down-stream artificial inflation of reporting health scores.
+
+4. Domain-Specific Imputation:
+   Applies a physics-informed approach to missing data reconstruction:
+   - Precipitation ('mean_rain'): Missing values are imputed with 0.0. This assumes no unrecorded 
+     meteorological forcing events took place during transmission drops.
+   - Streamflow ('Flow_m3_sec'): Left explicitly as NaN. Imputing artificial river discharge 
+     values would severely compromise the learning capabilities of the neural model and induce 
+     false physical behaviors.
+"""
+
 import os
 import yaml
+import pandas as pd
+import numpy as np
 from tqdm import tqdm
 
 def load_config(yaml_path):
@@ -68,12 +104,9 @@ def process_dynamic_data(config):
     Orchestrates the data pipeline using modular helper functions.
     All paths and parameters are drawn directly from the config.
     """
-    # Extract boundary dates
-    START_DATE = config['train_start_date']
+    # Extract global end date boundary
     END_DATE = config['test_end_date']
     
-    print(f"Overall timeseries span: {START_DATE} to {END_DATE}")
-
     # Extract all paths from the configuration
     input_dir = config['raw_dynamic_dir']
     output_dir = config['processed_timeseries_dir']
@@ -93,8 +126,12 @@ def process_dynamic_data(config):
         # Step 1: Resample to hourly resolution
         hourly_df = resample_to_hourly(raw_df)
         
-        # Step 2: Align to the full timeline (creates explicit NaNs)
-        aligned_df = align_to_timeline(hourly_df, START_DATE, END_DATE)
+        # Step 2: Extract the earliest available dynamic timestamp specific to this basin
+        # This replaces the hardcoded global START_DATE to ensure no historical data is discarded
+        basin_start_date = hourly_df.index.min()
+        
+        # Align to the full timeline starting from the basin's individual birth date
+        aligned_df = align_to_timeline(hourly_df, basin_start_date, END_DATE)
         
         # Step 3: Check original data quality (before imputation)
         flow_available = analyze_data_quality(aligned_df)
@@ -112,7 +149,7 @@ def process_dynamic_data(config):
         output_path = os.path.join(output_dir, file_name)
         clean_df.to_csv(output_path, index_label='date')
         
-        tqdm.write(f"Done {file_name}: {flow_available:.2f}% flow data.")
+        tqdm.write(f"Done {file_name}: Processed from {basin_start_date} to {END_DATE}. {flow_available:.2f}% flow data.")
 
     # Create and save the final availability report
     report_df = pd.DataFrame(availability_records)

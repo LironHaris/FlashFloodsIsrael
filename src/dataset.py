@@ -1,3 +1,40 @@
+"""
+Module: dataset.py
+Description: Hourly Multi-Basin Data Pipeline for Entity-Aware LSTM (EA-LSTM) Flood Forecasting.
+
+This script orchestrates the loading, alignment, and slicing of meteorological time series 
+and static catchment attributes across multiple distinct hydrological basins. 
+
+Pipeline Design & Operational Phases:
+1. Boundary & Buffer Evaluation (_get_split_bounds_and_config):
+   Maps the requested data split ('train', 'val', or 'test') to specific dates. To mitigate the 
+   recurrent "Warm-up" state initialization penalty (base cases starting at zeros), validation and 
+   testing start dates are dynamically expanded backwards into preceding data by a buffer of 
+   X hours (equal to 'seq_length'). This guarantees a complete history for the very first sample.
+
+2. Basin Identification & Validation (_load_basin_ids & _build_basin_datasets):
+   Parses a specified flat text file containing targeted gauge IDs. It scans the storage space, 
+   verifies file integrity, and isolates active basin structures that possess sufficient continuous 
+   records to form at least one sequence window.
+
+3. Slicing with Explicit Temporal Look-back (SingleBasinDataset):
+   Extracts rolling sequence windows using index offsets. For an index 'idx', the target prediction 
+   hour is computed as: target_day = idx + seq_length - 1. The window then slices backward into the 
+   past, extracting historical indices from 'target_day - seq_length + 1' up to 'target_day' inclusive.
+
+4. Aggregation and Loader Wrapping (get_dataloader):
+   Stitches individual basin datasets into a structurally contiguous object via PyTorch's ConcatDataset. 
+   This combined matrix is wrapped inside a parallelized, multi-threaded DataLoader.
+
+Optimization & Interpretability Decisions:
+- Fast In-Memory Casting: CSV structures are parsed and transformed into float32 NumPy arrays 
+  directly during instantiation. This removes high-overhead Pandas operations from the training loop.
+- Feature Ordering: Slicing matrices explicitly via lists enforces strict, immutable compliance 
+  with the layout designated inside 'config.yml', preserving tensor index alignment across diverse basins.
+- Metadata Infiltration: Attaches feature string names directly onto the final DataLoader object instance. 
+  This circumvents PyTorch tensor token string limitations and exposes names for downstream interpretability analysis.
+"""
+
 import os
 import pandas as pd
 import numpy as np
@@ -19,7 +56,7 @@ class SingleBasinDataset(Dataset):
             dynamic_path (str): Path to the hourly dynamic data CSV.
             static_path (str): Path to the static features CSV.
             config (dict): Configuration dictionary loaded from config.yml.
-            start_date (str): Start date string for filtering (including buffer).
+            start_date (str or None): Start date string for filtering. If None, uses earliest available date.
             end_date (str): End date string for filtering.
         """
         # Load dynamic and static data
@@ -29,13 +66,18 @@ class SingleBasinDataset(Dataset):
         stat_df = pd.read_csv(static_path)
         
         # Filter the dynamic data according to the provided period (includes warm-up buffer)
-        dyn_df = dyn_df[start_date : end_date]
+        # If start_date is None (Adaptive Train mode), we slice from the earliest available record
+        if start_date is None:
+            dyn_df = dyn_df[: end_date]
+        else:
+            dyn_df = dyn_df[start_date : end_date]
         
         # Extract configurations and preserve metadata feature names
         self.seq_length = config['seq_length']
         self.dynamic_feature_names = config['dynamic_inputs']
         self.static_feature_names = config['static_attributes']
         self.target_cols = config['target_variables']
+        self.forecast_lead_times = config['forecast_lead_times']
         
         # Convert to fast NumPy arrays (float32 is optimized for PyTorch)
         # Explicitly indexing by list enforces strict adherence to config-defined feature order
@@ -46,7 +88,8 @@ class SingleBasinDataset(Dataset):
         self.x_static = stat_df[self.static_feature_names].iloc[0].values.astype(np.float32)
         
         # Calculate how many valid look-back sequences can be extracted
-        self.num_samples = len(self.x_dynamic) - self.seq_length + 1
+        # Safeguarded against multi-horizon lead time projections at the end of the array
+        self.num_samples = len(self.x_dynamic) - self.seq_length - max(self.forecast_lead_times) + 1
 
     def __len__(self):
         """Returns the total number of valid sequence windows in this dataset."""
@@ -65,8 +108,14 @@ class SingleBasinDataset(Dataset):
         # Slice the past sequence window (Includes start_day up to target_day)
         window_x_dynamic = self.x_dynamic[start_day : target_day + 1]
         
-        # Extract the corresponding target value for this exact look-back window
-        target_y = self.y[target_day]
+        # Extract multiple future targets based on lead times configuration (Multi-Horizon)
+        target_list = []
+        for lead in self.forecast_lead_times:
+            future_hour = target_day + lead
+            target_list.append(self.y[future_hour])
+            
+        # Packaging targets into a unified vector: Shape (len(forecast_lead_times), len(target_cols))
+        target_y = np.array(target_list, dtype=np.float32).flatten()
         
         return {
             'dynamic': torch.tensor(window_x_dynamic),
@@ -88,7 +137,7 @@ def _get_split_bounds_and_config(split_type, config):
     if split_type == 'train':
         return (
             config['train_basin_file'],
-            config['train_start_date'],
+            None, # start_date set to None to trigger adaptive earliest date detection per basin
             config['train_end_date'],
             True # is_shuffle
         )
@@ -110,7 +159,7 @@ def _get_split_bounds_and_config(split_type, config):
 
 
 def _load_basin_ids(basin_list_file):
-    """Parses, cleans, and returns individual basin IDs from the target text file."""
+    """Parses, cleans, and returns individual basin IDs from the text file."""
     if not os.path.exists(basin_list_file):
         raise FileNotFoundError(f"Basin split list file missing at: {basin_list_file}")
         

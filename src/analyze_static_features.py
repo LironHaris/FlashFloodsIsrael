@@ -1,3 +1,36 @@
+"""
+Module: analyze_static_features.py
+Description: Principal Component Analysis (PCA) Pipeline for Catchment Static Attributes.
+
+This script executes a dimensionality reduction and variance exploration workflow on the 
+static geographical and climatological attributes of the targeted hydrological basins. 
+
+Statistical Pipeline & Functional Stages:
+1. Feature Standardization (Z-score Normalization):
+   Since physical attributes span vastly different units and scales (e.g., aridity index vs. 
+   mean precipitation in mm), features are centered and scaled before variance extraction:
+   z = (x - mu) / sigma
+   Where 'mu' is the feature mean and 'sigma' is the standard deviation. This prevents 
+   high-magnitude attributes from artificially dominating the principal orthogonal axes.
+
+2. Dynamic Principal Component Extraction:
+   Fits a parametric PCA using Singular Value Decomposition (SVD) to project the scaled 
+   multivariate data onto orthogonal vector spaces (Principal Components). Rather than enforcing 
+   a rigid components cutoff, the framework dynamically selects the number of dimensions 'k' 
+   required to satisfy the collective variance parameter from config ('pca_variance_threshold', e.g., 95%).
+
+3. Core Reports Export:
+   - Variance Summary: Tabulates the individual Explained Variance Ratio and Cumulative Variance 
+     contributions per orthogonal component.
+   - Loadings Report: Maps the structural feature weights (eigenvectors) to each component, 
+     providing statistical interpretability into what physical characteristics dominate each axis.
+   - Projected Data: Transforms the source dataset into the newly derived compact PCA coordinate space.
+
+Operational Context:
+- This pipeline operates strictly on spatial basin attribute arrays ('static_attributes_file') and 
+  is independent of temporal look-back variations or multi-horizon prediction settings.
+"""
+
 import pandas as pd
 import numpy as np
 import yaml
