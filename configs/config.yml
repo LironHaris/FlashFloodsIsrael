@@ -311,3 +311,6 @@ return_periods_years: [2, 5, 10, 15, 20, 30]
 return_periods_output_dir: ./data/processed/return_periods
 hydro_year_start_month: 10 # October
 min_years_for_gev: 5       # Minimum data points (years) required to fit GEV stably
+
+# --- Multi-Horizon Forecast Settings (In Hours ahead) ---
+forecast_lead_times: [0, 1, 6, 24]
