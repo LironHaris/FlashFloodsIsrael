@@ -1,5 +1,5 @@
 """
-Module: ea_lstm.py
+Module: model.py
 Description: Dynamic Entity-Aware LSTM (EA-LSTM) for Multi-Horizon Streamflow Forecasting.
 
 This model implements the EA-LSTM architecture proposed by Kratzert et al. (2019)
