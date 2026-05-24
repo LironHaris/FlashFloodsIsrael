@@ -275,17 +275,114 @@ clip_targets_to_zero:
 
 # Which CAMELS attributes to use. Leave empty if none should be used
 static_attributes:
-- p_mean
-- pet_mean
-- aridity
-- frac_snow
-- moisture_index
-- seasonality
-- high_prec_freq
-- high_prec_dur
-- low_prec_freq
-- low_prec_dur
-
+- cmi_ix_s02           # climate moisture index per month
+- glc_pc_s20           # land cover extent classes
+- lka_pc_sse           # lake area
+- glc_pc_s22           # land cover extent classes
+- pnv_pc_s10           # potential natural vegitation - % extent of class
+- glc_pc_s15           # land cover extent classes
+- cmi_ix_s12           # climate moisture index per month
+- cmi_ix_s01           # climate moisture index per month
+- pnv_pc_s11           # potential natural vegitation - % extent of class
+- ele_mt_smn           # elevation in sub-basin - min
+- pnv_pc_s14           # potential natural vegitation - % extent of class
+- cmi_ix_s11           # climate moisture index per month
+- riv_tc_usu           # river volume upstream
+- area                 # basin area
+- glc_pc_s14           # land cover extent classes
+- dis_m3_pmn           # annual discharge - min
+- glc_pc_s19           # land cover extent classes
+- for_pc_sse           # forest cover extent
+- glc_pc_s03           # land cover extent classes
+- pre_mm_s09           # precipitation
+- inu_pc_smn           # annual inundation extent - mean annual minimum
+- dis_m3_pyr           # annual discharge - average
+- ero_kh_sav           # soil erosion
+- glc_pc_s18           # land cover extent classes
+- pnv_pc_s12           # potential natural vegitation - % extent of class
+- dis_m3_pmx           # annual discharge - max
+- pnv_pc_s09           # potential natural vegitation - % extent of class
+- glc_pc_s16           # land cover extent classes
+- urb_pc_sse           # urban extent %
+- cmi_ix_s03           # climate moisture index per month
+- glc_pc_s12           # land cover extent classes
+- pre_mm_s05           # precipitation
+- inu_pc_smx           # annual inundation extent - mean annual maximum
+- crp_pc_sse           # cropland extent %
+- rdd_mk_sav           # road density
+- sgr_dk_sav           # stream gradient
+- swc_pc_s10           # soil water content % - monthly
+- pst_pc_sse           # pasture extent %
+- swc_pc_s09           # soil water content % - monthly
+- pre_mm_s04           # precipitation
+- aet_mm_s10           # actual evapotranspiration - monthly
+- aet_mm_s09           # actual evapotranspiration - monthly
+- ari_ix_sav           # aridity index
+- swc_pc_s11           # soil water content % - monthly
+- pre_mm_s10           # precipitation
+- p_mean               # mean daily precipitation
+- low_prec_dur         # Average duration of low precipitation events
+- ele_mt_sav           # elevation in sub-basin - average
+- swc_pc_s12           # soil water content % - monthly
+- pre_mm_s01           # precipitation
+- aet_mm_s11           # actual evapotranspiration - monthly
+- pre_mm_s02           # precipitation
+- swc_pc_s05           # soil water content % - monthly
+- kar_pc_sse           # karst area extent
+- swc_pc_syr           # soil water content % - annual
+- seasonality          # Moisture index seasonality in range [0, 2], where 0 indicates no changes in the water/energy budget throughout the year and 2 indicates a change from fully arid to fully humid
+- pre_mm_syr           # precipitation
+- pre_mm_s12           # precipitation
+- swc_pc_s01           # soil water content % - monthly
+- aet_mm_s12           # actual evapotranspiration - monthly
+- swc_pc_s02           # soil water content % - monthly
+- run_mm_syr           # land surface runoff
+- pre_mm_s11           # precipitation
+- swc_pc_s04           # soil water content % - monthly
+- swc_pc_s03           # soil water content % - monthly
+- pre_mm_s03           # precipitation
+- aet_mm_s05           # actual evapotranspiration - monthly
+- aet_mm_syr           # actual evapotranspiration - annual
+- aet_mm_s01           # actual evapotranspiration - monthly
+- ele_mt_smx           # elevation in sub-basin - max
+- aet_mm_s02           # actual evapotranspiration - monthly
+- aet_mm_s04           # actual evapotranspiration - monthly
+- aet_mm_s03           # actual evapotranspiration - monthly
+- slp_dg_sav           # terrain slope
+- hft_ix_s09           # human footprint index (2009)
+- gwt_cm_sav           # groundwater table depth
+- cmi_ix_syr           # climate moisture index - annual
+- moisture_index       # moisture index
+- pet_mean             # potential evapotranspiration
+- tmp_dc_s01           # air temperature - monthly
+- cly_pc_sav           # clay fraction in soil %
+- tmp_dc_s02           # air temperature - monthly
+- cmi_ix_s04           # climate moisture index per month
+- high_prec_freq       # Frequency of high precipitation days, where precipitation ≥5 times mean daily precipitation
+- pet_mm_s01           # potential evapotranspiration - monthly
+- tmp_dc_s03           # air temperature - monthly
+- tmp_dc_s12           # air temperature - monthly
+- pet_mm_s02           # potential evapotranspiration - monthly
+- pet_mm_s12           # potential evapotranspiration - monthly
+- pet_mm_s03           # potential evapotranspiration - monthly
+- tmp_dc_s04           # air temperature - monthly
+- pet_mm_s11           # potential evapotranspiration - monthly
+- snd_pc_sav           # sand fraction in soil
+- tmp_dc_s11           # air temperature - monthly
+- cmi_ix_s10           # climate moisture index per month
+- pet_mm_s04           # potential evapotranspiration - monthly
+- pet_mm_syr           # potential evapotranspiration - annual mean
+- tmp_dc_syr           # air temperature - yearly average
+- pet_mm_s05           # potential evapotranspiration - monthly
+- tmp_dc_s05           # air temperature - monthly
+- pet_mm_s10           # potential evapotranspiration - monthly
+- pet_mm_s09           # potential evapotranspiration - monthly
+- low_prec_freq        # Frequency of low precipitation days, where precipitation
+- tmp_dc_s10           # air temperature - monthly
+- tmp_dc_s09           # air temperature - monthly
+- cmi_ix_s05           # climate moisture index per month
+- high_prec_dur        # Average duration of high precipitation events (number of consecutive days where precipitation ≥5 times mean daily precipitation
+- cmi_ix_s09           # climate moisture index per month
 
 # Path to pickle file(s) containing additional data. Each pickle file must contain a dictionary
 # with one key for each basin and the value is a time indexed data frame, where each column is a 
