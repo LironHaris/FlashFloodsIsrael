@@ -26,7 +26,7 @@ The statistical pipeline is structured into three consecutive steps:
 
 Safeguards & Constraints:
 - Minimal Data Sufficiency: Computations are bypassed via 'min_years_for_gev' if a basin's 
-  valid record length is insufficient to construct stable parametric curves.
+   valid record length is insufficient to construct stable parametric curves.
 """
 
 import pandas as pd
@@ -136,17 +136,17 @@ def extract_annual_maxima(df):
     # --- B. Daily Maxima (Flow is averaged daily, rain is summed daily) ---
     daily_resampled = df.resample('D').agg({
         'Flow_m3_sec': 'mean',
-        'mean_rain': 'sum',
+        'hourly_precipitation': 'sum',
         'Hydro_Year': 'first'
     })
     daily_am = daily_resampled.groupby('Hydro_Year').max()
     
-    # Package into a dictionary for clean looping
+    # Package into a dictionary for clean looping - UPDATED TO HOURLY_PRECIPITATION
     return {
         'Hourly_Flow': hourly_am['Flow_m3_sec'],
-        'Hourly_Rain': hourly_am['mean_rain'],
+        'Hourly_Rain': hourly_am['hourly_precipitation'],
         'Daily_Flow': daily_am['Flow_m3_sec'],
-        'Daily_Rain': daily_am['mean_rain']
+        'Daily_Rain': daily_am['hourly_precipitation']
     }
 
 def save_basin_results(annual_maxima_dict, basin_out_dir, target_periods, min_years):

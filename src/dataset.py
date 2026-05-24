@@ -1,6 +1,7 @@
 """
 Module: dataset.py
 Description: Hourly Multi-Basin Data Pipeline for Entity-Aware LSTM (EA-LSTM) Flood Forecasting.
+             Optimized to isolate and align static catchment attributes dynamically per basin.
 """
 
 import os
@@ -45,7 +46,13 @@ class SingleBasinDataset(Dataset):
         # Convert to fast NumPy arrays
         self.x_dynamic = dyn_df[self.dynamic_feature_names].values.astype(np.float32)
         self.y = dyn_df[self.target_cols].values.astype(np.float32)
-        self.x_static = stat_df[self.static_feature_names].iloc[0].values.astype(np.float32)
+        
+        # Slice specific basin row inside the master static matrix file
+        basin_static_row = stat_df[stat_df['gauge_id'].astype(str) == self.gauge_id]
+        if basin_static_row.empty:
+            raise KeyError(f"Gauge ID '{self.gauge_id}' missing in static attributes file: {static_path}")
+            
+        self.x_static = basin_static_row[self.static_feature_names].iloc[0].values.astype(np.float32)        
         
         # Calculate valid window boundaries
         self.num_samples = len(self.x_dynamic) - self.seq_length - max(self.forecast_lead_times) + 1
@@ -146,26 +153,24 @@ def _load_basin_ids(basin_list_file):
 
 def _build_basin_datasets(basin_ids, config, start_date, end_date):
     dyn_dir = config['processed_timeseries_dir'] # Points to the clean resampled data
-    stat_dir = config['processed_static_dir']
+    static_file_path = config['static_attributes_file']
     basin_datasets = []
 
     for basin_id in basin_ids:
         # Dynamic files are stored as [gauge_id].csv based on preprocessing script
         dyn_path = os.path.join(dyn_dir, f"{basin_id}.csv")
-        # Adjusting static name to fit static file generation if needed
-        stat_path = os.path.join(stat_dir, "static_attributes_nh.csv") 
         
-        # If your static data is saved as single file or split per basin, we handle it here:
-        if os.path.exists(dyn_path) and os.path.exists(config['static_attributes_file']):
+        # Safeguard verification: ensuring both dynamic sequence data and master static metrics exist
+        if os.path.exists(dyn_path) and os.path.exists(static_file_path):
             # Slice specific basin row inside SingleBasinDataset initialization
-            basin_ds = SingleBasinDataset(dyn_path, config['static_attributes_file'], config, start_date, end_date)
+            basin_ds = SingleBasinDataset(dyn_path, static_file_path, config, start_date, end_date)
             if len(basin_ds) > 0:
                 basin_datasets.append(basin_ds)
         else:
-            print(f"[Warning] Missing data file paths for basin {basin_id}. Skipping.")
+            print(f"[Warning] Missing file paths for basin {basin_id} (Dynamic or Static data missing). Skipping.")
 
     if len(basin_datasets) == 0:
-        raise RuntimeError("No valid basin datasets were generated from the provided list.")
+        raise RuntimeError("No valid basin datasets were generated from the provided split list.")
     return basin_datasets
 
 

@@ -26,8 +26,8 @@ Pipeline Architecture & Functional Stages:
 
 4. Domain-Specific Imputation:
    Applies a physics-informed approach to missing data reconstruction:
-   - Precipitation ('mean_rain'): Missing values are imputed with 0.0. This assumes no unrecorded 
-     meteorological forcing events took place during transmission drops.
+   - Precipitation ('hourly_precipitation'): Missing values are imputed with 0.0. This assumes no 
+     unrecorded meteorological forcing events took place during transmission drops.
    - Streamflow ('Flow_m3_sec'): Left explicitly as NaN. Imputing artificial river discharge 
      values would severely compromise the learning capabilities of the neural model and induce 
      false physical behaviors.
@@ -55,9 +55,10 @@ def resample_to_hourly(df):
     df['date'] = pd.to_datetime(df['date'])
     df.set_index('date', inplace=True)
     
+    # Standardized to use 'hourly_precipitation' as the core dynamic feature name
     resampled = df.resample('h', closed='left', label='left').agg({
         'Flow_m3_sec': 'mean',
-        'mean_rain': 'sum'
+        'hourly_precipitation': 'sum'
     })
     return resampled
 
@@ -93,7 +94,8 @@ def impute_missing_rain(aligned_df):
     Flow data is left as NaN to avoid training on artificial discharge data.
     """
     clean_df = aligned_df.copy()
-    clean_df['mean_rain'] = clean_df['mean_rain'].fillna(0)
+    # FIXED: Changed from 'mean_rain' to 'hourly_precipitation' to match the pipeline
+    clean_df['hourly_precipitation'] = clean_df['hourly_precipitation'].fillna(0)
     return clean_df
 
 # --------------------------------------------------------------------------------

@@ -263,7 +263,7 @@ forcings: maurer_extended
 #   1h:
 #     - total_precipitation_nldas_hourly
 dynamic_inputs:
-- mean_rain
+- hourly_precipitation
 
 # which columns to use as target
 target_variables:
