@@ -1,5 +1,5 @@
 """
-Module: preprocess_static_data.py
+Module: preprocess_static_attributes.py
 Description: Static Basin Attributes Ingestion, Merging, and Standardization Pipeline.
 
 This script implements a modular preprocessing workflow for static catchment attributes, 
