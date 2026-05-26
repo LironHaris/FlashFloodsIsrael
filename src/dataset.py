@@ -88,12 +88,12 @@ class IsraelBasinsDataset(Dataset):
     Wrapper dataset that concatenates multiple individual SingleBasinDatasets 
     and extracts global tracking arrays for sequential basin-by-basin testing.
     """
-    def __init__(self, split_type, config):
+    def __init__(self, split_type, config, use_basin_splits=True):
         # Step 1: Extract paths, time bounds, and shuffling rules
-        basin_list_file, start_date, end_date, _ = _get_split_bounds_and_config(split_type, config)
+        basin_list_file, start_date, end_date, _ = _get_split_bounds_and_config(split_type, config, use_basin_splits)
 
         # Step 2: Load the target basin IDs
-        basin_ids = _load_basin_ids(basin_list_file)
+        basin_ids = _load_basin_ids(basin_list_file, config, use_basin_splits)
 
         # Step 3: Construct dataset objects for each individual basin
         self.basin_datasets = _build_basin_datasets(basin_ids, config, start_date, end_date)
@@ -125,26 +125,49 @@ class IsraelBasinsDataset(Dataset):
 # ==============================================================================
 # 3. Private Helper Sub-Functions
 # ==============================================================================
-def _get_split_bounds_and_config(split_type, config):
+def _get_split_bounds_and_config(split_type, config, use_basin_splits):
     buffer_hours = config['seq_length'] 
 
-    if split_type == 'train':
-        return config['train_basin_file'], None, config['train_end_date'], True
-        
-    elif split_type in ['val', 'test']:
-        prefix = 'validation' if split_type == 'val' else 'test'
-        basin_list_file = config[f'{prefix}_basin_file']
-        
-        raw_start = pd.to_datetime(config[f'{prefix}_start_date'])
-        start_date = (raw_start - pd.Timedelta(hours=buffer_hours)).strftime('%Y-%m-%d %H:%M:%S')
-        end_date = config[f'{prefix}_end_date']
-        
-        return basin_list_file, start_date, end_date, False
+    if use_basin_splits:
+        if split_type == 'train':
+            return config['train_basin_file'], None, config['train_end_date'], True
+            
+        elif split_type in ['val', 'test']:
+            prefix = 'validation' if split_type == 'val' else 'test'
+            basin_list_file = config[f'{prefix}_basin_file']
+            
+            raw_start = pd.to_datetime(config[f'{prefix}_start_date'])
+            start_date = (raw_start - pd.Timedelta(hours=buffer_hours)).strftime('%Y-%m-%d %H:%M:%S')
+            end_date = config[f'{prefix}_end_date']
+            
+            return basin_list_file, start_date, end_date, False
     else:
-        raise ValueError("split_type must be either 'train', 'val', or 'test'")
+        # Strict temporal split: ignore val/test basin files, use master list or fallback directory scan
+        basin_list_file = config['train_basin_file']
+        
+        if split_type == 'train':
+            return basin_list_file, None, config['train_end_date'], True
+            
+        elif split_type in ['val', 'test']:
+            prefix = 'validation' if split_type == 'val' else 'test'
+            
+            raw_start = pd.to_datetime(config[f'{prefix}_start_date'])
+            start_date = (raw_start - pd.Timedelta(hours=buffer_hours)).strftime('%Y-%m-%d %H:%M:%S')
+            end_date = config[f'{prefix}_end_date']
+            
+            return basin_list_file, start_date, end_date, False
+            
+    raise ValueError("split_type must be either 'train', 'val', or 'test'")
 
 
-def _load_basin_ids(basin_list_file):
+def _load_basin_ids(basin_list_file, config, use_basin_splits):
+    # If temporal split is selected, skip files and load every single basin dynamically
+    if not use_basin_splits:
+        dyn_dir = config['processed_timeseries_dir']
+        all_basins = [f.replace('.csv', '') for f in os.listdir(dyn_dir) if f.endswith('.csv')]
+        print(f"[Info] Spatial splits disabled. Automatically loaded all {len(all_basins)} basins for temporal split.")
+        return all_basins
+
     if not os.path.exists(basin_list_file):
         raise FileNotFoundError(f"Basin split list file missing at: {basin_list_file}")
     with open(basin_list_file, 'r') as f:
@@ -177,14 +200,14 @@ def _build_basin_datasets(basin_ids, config, start_date, end_date):
 # ==============================================================================
 # 4. Main Loader Builder Function
 # ==============================================================================
-def get_dataloader(split_type, config):
+def get_dataloader(split_type, config, use_basin_splits=True):
     """
     Creates and packages multi-basin datasets for training or standard batch validation.
     """
     # Instantiate the wrapper dataset
-    israel_dataset = IsraelBasinsDataset(split_type, config)
+    israel_dataset = IsraelBasinsDataset(split_type, config, use_basin_splits=use_basin_splits)
     
-    _, _, _, is_shuffle = _get_split_bounds_and_config(split_type, config)
+    _, _, _, is_shuffle = _get_split_bounds_and_config(split_type, config, use_basin_splits)
     
     loader = DataLoader(
         israel_dataset, 
