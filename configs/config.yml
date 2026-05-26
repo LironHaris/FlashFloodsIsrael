@@ -36,7 +36,7 @@ per_basin_test_periods_file:
 seed: 42
 
 # which GPU (id) to use [in format of cuda:0, cuda:1 etc, or cpu, mps or None]
-device: cpu #chnge to cuda:0 before running on cluster
+device: cuda:0 #change to cuda:0 before running on cluster or cpu for running on pc
 
 # --- Validation configuration ---------------------------------------------------------------------
 
