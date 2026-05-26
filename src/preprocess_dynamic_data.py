@@ -60,6 +60,7 @@ def resample_to_hourly(df):
         'Flow_m3_sec': 'mean',
         'hourly_precipitation': 'sum'
     })
+    resampled = resampled.rename(columns={'mean_rain': 'hourly_precipitation'})
     return resampled
 
 # --------------------------------------------------------------------------------
