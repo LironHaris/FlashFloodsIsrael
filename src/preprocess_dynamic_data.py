@@ -58,7 +58,7 @@ def resample_to_hourly(df):
     # Standardized to use 'hourly_precipitation' as the core dynamic feature name
     resampled = df.resample('h', closed='left', label='left').agg({
         'Flow_m3_sec': 'mean',
-        'hourly_precipitation': 'sum'
+        'mean_rain': 'sum'
     })
     resampled = resampled.rename(columns={'mean_rain': 'hourly_precipitation'})
     return resampled
