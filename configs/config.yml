@@ -356,7 +356,7 @@ static_attributes:
 - moisture_index       # moisture index
 - pet_mean             # potential evapotranspiration
 - tmp_dc_s01           # air temperature - monthly
-- cly_pc_sav           # clay fraction in soil %
+#- cly_pc_sav           # clay fraction in soil %
 - tmp_dc_s02           # air temperature - monthly
 - cmi_ix_s04           # climate moisture index per month
 - high_prec_freq       # Frequency of high precipitation days, where precipitation ≥5 times mean daily precipitation
@@ -368,7 +368,7 @@ static_attributes:
 - pet_mm_s03           # potential evapotranspiration - monthly
 - tmp_dc_s04           # air temperature - monthly
 - pet_mm_s11           # potential evapotranspiration - monthly
-- snd_pc_sav           # sand fraction in soil
+#- snd_pc_sav           # sand fraction in soil
 - tmp_dc_s11           # air temperature - monthly
 - cmi_ix_s10           # climate moisture index per month
 - pet_mm_s04           # potential evapotranspiration - monthly
