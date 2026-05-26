@@ -159,10 +159,17 @@ def main():
     device = torch.device(device_str if torch.cuda.is_available() or device_str == 'cpu' else 'cpu')
     print(f"[INFO] Execution target hardware configured to: {device}")
 
+    # Read the spatial split flag directly from the configuration file (default to True if missing)
+    use_spatial = config.get('use_basin_splits', True)
+    if not use_spatial:
+        print("[INFO] Spatial basin splits disabled via config. Using strict temporal configuration.")
+    else:
+        print("[INFO] Spatial basin splits enabled via config. Loading specific basin split files.")
+
     # Step 2: Initialize Data Pipeline Loaders
     print("[INFO] Constructing dataset pipelines and dataloaders...")
-    train_loader = get_dataloader(split_type='train', config=config)
-    val_loader = get_dataloader(split_type='val', config=config)
+    train_loader = get_dataloader(split_type='train', config=config, use_basin_splits=use_spatial)
+    val_loader = get_dataloader(split_type='val', config=config, use_basin_splits=use_spatial)
 
     # Step 3: Construct Architecture and Optimization Engines
     print("[INFO] Instantiating EA-LSTM model architecture dynamically...")

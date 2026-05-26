@@ -12,6 +12,7 @@ experiment_name: israel_flash_floods_ealstm_v1
 run_dir: ./runs/
 
 # files to specify training, validation and test basins (relative to code root or absolute path)
+use_basin_splits: false
 train_basin_file: data/basin_lists/israel_train.txt
 validation_basin_file: data/basin_lists/israel_val.txt
 test_basin_file: data/basin_lists/israel_test.txt
