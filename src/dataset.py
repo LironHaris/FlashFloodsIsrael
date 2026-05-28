@@ -130,8 +130,7 @@ def _get_split_bounds_and_config(split_type, config, use_basin_splits):
 
     if use_basin_splits:
         if split_type == 'train':
-            #training start as early as possible
-            return config['train_basin_file'], None, config['train_end_date'], True
+            return config['train_basin_file'], config.get('train_start_date'), config['train_end_date'], True
             
         elif split_type in ['val', 'test']:
             prefix = 'validation' if split_type == 'val' else 'test'
@@ -147,8 +146,7 @@ def _get_split_bounds_and_config(split_type, config, use_basin_splits):
         basin_list_file = config['train_basin_file']
         
         if split_type == 'train':
-            #training start as early as possible
-            return basin_list_file, None, config['train_end_date'], True
+            return basin_list_file, config.get('train_start_date'), config['train_end_date'], True
             
         elif split_type in ['val', 'test']:
             prefix = 'validation' if split_type == 'val' else 'test'
