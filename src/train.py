@@ -151,8 +151,21 @@ def plot_training_curves(train_losses, val_losses, loss_setting, exp_dir):
 
 def main():
     # Step 1: Ingest setup assets and configuration parameters
-    CONFIG_PATH = "configs/config.yml"
+    #CONFIG_PATH = "configs/config.yml"
+    #config = load_config(CONFIG_PATH)
+    if os.path.exists("configs/config_temp.yml"):
+        CONFIG_PATH = "configs/config_temp.yml"
+    else:
+        CONFIG_PATH = "configs/config.yml"
+        
     config = load_config(CONFIG_PATH)
+    
+    # מוחק את הקובץ הזמני מיד לאחר הטעינה כדי שלא ישפיע על ריצות אחרות בעתיד
+    if os.path.exists("configs/config_temp.yml"):
+        try:
+            os.remove("configs/config_temp.yml")
+        except:
+            pass
     
     set_seed(config.get('seed', 42))
     
