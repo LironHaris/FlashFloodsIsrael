@@ -11,6 +11,7 @@ import torch.optim as optim
 from tqdm import tqdm
 import numpy as np
 import matplotlib.pyplot as plt
+import wandb
 
 from model import EALSTMModel
 from dataset import get_dataloader
@@ -187,6 +188,14 @@ def main():
     exp_dir = os.path.join(run_dir, config['experiment_name'])
     os.makedirs(exp_dir, exist_ok=True)
 
+    use_wandb = config.get('use_wandb', False)
+    if use_wandb:
+        wandb.init(
+            project=config.get('wandb_project', 'flash-floods-israel'),
+            name=config['experiment_name'],
+            config=config,
+        )
+
     # Trackers for saving checkpoints and plotting history
     best_val_loss = float('inf')
     train_loss_history = []
@@ -220,6 +229,13 @@ def main():
         print(f"Epoch [{epoch+1}/{epochs}] Completed:")
         print(f"  -> Train {metric_label}: {train_loss:.5f}")
         print(f"  -> Val {metric_label}:   {val_loss:.5f}")
+
+        if use_wandb:
+            wandb.log({
+                'train_loss': train_loss,
+                'val_loss': val_loss,
+                'learning_rate': optimizer.param_groups[0]['lr'],
+            }, step=epoch + 1)
         
         # Part C: Strategic Model Selection (Save Best Weights)
         if val_loss < best_val_loss:
@@ -232,6 +248,9 @@ def main():
                 'val_loss': val_loss,
             }, best_checkpoint_path)
             print(f"Validation improvement detected. Saved as best_model.pt")
+            if use_wandb:
+                wandb.run.summary['best_val_loss'] = val_loss
+                wandb.run.summary['best_epoch'] = epoch + 1
         
         # Part D: Standard Periodic Backup
         if (epoch + 1) % config.get('save_weights_every', 1) == 0:
@@ -245,6 +264,9 @@ def main():
 
     # Step 5: Generate and export the history curves chart
     plot_training_curves(train_loss_history, val_loss_history, loss_setting, exp_dir)
+
+    if use_wandb:
+        wandb.finish()
 
     print(f"\n[INFO] Optimization sequence finished. Best Validation {loss_setting}: {best_val_loss:.5f}")
     print(f"[INFO] All outputs and checkpoints archived inside: {exp_dir}")
