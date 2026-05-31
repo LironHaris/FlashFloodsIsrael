@@ -178,7 +178,7 @@ def main():
 
     # Step 2: Initialize sterile test split tracking arrays
     print("[INFO] Constructing test datasets and extracting sequential metadata...")
-    test_dataset = IsraelBasinsDataset(split_type='test', config=config)
+    test_dataset = IsraelBasinsDataset(split_type='test', config=config, use_basin_splits=False)
     
     # Set up dedicated output folder inside run directory
     output_dir = os.path.join(exp_dir, "visualization_reports")
