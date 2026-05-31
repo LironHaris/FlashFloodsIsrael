@@ -151,7 +151,7 @@ class IsraelBasinsDataset(Dataset):
         basin_list_file, start_date, end_date, _ = _get_split_bounds_and_config(split_type, config, use_basin_splits)
 
         # Step 2: Load the target basin IDs
-        basin_ids = _load_basin_ids(basin_list_file, config, use_basin_splits)
+        basin_ids = _load_basin_ids(basin_list_file, config, use_basin_splits, split_type)
 
         # Step 3: Construct dataset objects for each individual basin
         self.basin_datasets = _build_basin_datasets(basin_ids, config, start_date, end_date)
@@ -217,12 +217,13 @@ def _get_split_bounds_and_config(split_type, config, use_basin_splits):
     raise ValueError("split_type must be either 'train', 'val', or 'test'")
 
 
-def _load_basin_ids(basin_list_file, config, use_basin_splits):
+def _load_basin_ids(basin_list_file, config, use_basin_splits, split_type='train'):
     # If temporal split is selected, skip files and load every single basin dynamically
     if not use_basin_splits:
         dyn_dir = config['processed_timeseries_dir']
         all_basins = [f.replace('.csv', '') for f in os.listdir(dyn_dir) if f.endswith('.csv')]
-        print(f"[Info] Spatial splits disabled. Automatically loaded all {len(all_basins)} basins for temporal split.")
+        if split_type == 'train':
+            print(f"[Info] Spatial splits disabled. Automatically loaded all {len(all_basins)} basins for temporal split.")
         return all_basins
 
     if not os.path.exists(basin_list_file):
