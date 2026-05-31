@@ -10,7 +10,14 @@ import yaml
 import torch
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
 from tqdm import tqdm
+
+try:
+    import wandb
+    WANDB_AVAILABLE = True
+except ImportError:
+    WANDB_AVAILABLE = False
 
 # Import local pipeline components
 from model import EALSTMModel
@@ -169,6 +176,50 @@ def build_and_export_report(basin, output_dir, timestamps, actual_flows, pred_le
     csv_filename = os.path.join(output_dir, f"visual_report_basin_{basin}.csv")
     df.to_csv(csv_filename, index=False, encoding='utf-8')
     print(f"Evaluation report compiled and exported to: {csv_filename}")
+    return df
+
+
+def _plot_basin_timeseries(basin, df, config):
+    """Generates a full-period time-series figure for a basin and returns it as a wandb.Image."""
+    lead_colors = {0: '#2b8cbe', 1: '#8856a7', 6: '#cb181d', 12: '#86592d', 24: '#f16913'}
+    lead_styles = {0: '-', 1: '--', 6: '--', 12: ':', 24: ':'}
+    threshold_colors = {2: '#bae4b3', 5: '#74c476', 10: '#ef3b2c', 20: '#990000', 30: '#67000d'}
+
+    fig, ax = plt.subplots(figsize=(14, 5), facecolor="#fafafa")
+    ax.set_facecolor("#ffffff")
+
+    ax.plot(df['timestamp'], df['actual_flow'], color="#1e1e1e", linewidth=1.8,
+            label="Actual Streamflow")
+
+    active_leads = config.get('forecast_lead_times', [0, 6, 24])
+    for lead in active_leads:
+        col = f"pred_lead_{lead}h"
+        if col in df.columns:
+            ax.plot(df['timestamp'], df[col],
+                    color=lead_colors.get(lead, '#7f7f7f'),
+                    linestyle=lead_styles.get(lead, '-'),
+                    linewidth=1.2, alpha=0.8, label=f"+{lead}h Lead")
+
+    rp_years = config.get('return_periods_years', [2, 5, 10, 20])
+    for rp in rp_years:
+        thresh_col = f"threshold_{rp}yr_rp"
+        if thresh_col in df.columns:
+            thresh_val = df[thresh_col].iloc[0]
+            if thresh_val > 0:
+                ax.axhline(y=thresh_val, color=threshold_colors.get(rp, '#d9d9d9'),
+                           linestyle="-.", linewidth=1.0, alpha=0.85,
+                           label=f"{rp}yr RP ({thresh_val:.1f} m³/s)")
+
+    ax.set_title(f"Test Period — Basin {basin}", fontsize=11, fontweight='bold', color="#2c3e50")
+    ax.set_xlabel("Date", fontsize=9)
+    ax.set_ylabel("Discharge (m³/s)", fontsize=9)
+    ax.grid(True, linestyle=":", alpha=0.4, color="#b0b0b0")
+    ax.legend(fontsize=8, loc="upper right", frameon=True)
+    plt.tight_layout()
+
+    image = wandb.Image(fig, caption=f"Basin {basin} — full test period")
+    plt.close(fig)
+    return image
 
 
 def main():
@@ -179,29 +230,75 @@ def main():
     # Step 2: Initialize sterile test split tracking arrays
     print("[INFO] Constructing test datasets and extracting sequential metadata...")
     test_dataset = IsraelBasinsDataset(split_type='test', config=config, use_basin_splits=False)
-    
+
     # Set up dedicated output folder inside run directory
     output_dir = os.path.join(exp_dir, "visualization_reports")
     os.makedirs(output_dir, exist_ok=True)
+
+    use_wandb = config.get('use_wandb', False) and WANDB_AVAILABLE
+    if use_wandb:
+        wandb.init(
+            project=config.get('wandb_project', 'flash-floods-israel'),
+            name=f"{config['experiment_name']}_test",
+            config=config,
+        )
 
     # Step 3: Core loop executing sequential analysis basin-by-basin
     test_basins = test_dataset.basins
     print(f"[INFO] Identified {len(test_basins)} test basins. Starting execution loop...\n")
 
+    all_hit_rate_rows = []   # accumulates rows for wandb.Table
+    score_accumulator = {}   # {col_name: [values]} for computing means
+
     for basin in test_basins:
         print(f"Processing Basin Context: {basin}")
-        
+
         # Sequence inference processing loop
         basin_data = evaluate_basin_sequences(basin, test_dataset, model, device, config)
-        
+
         if basin_data is None:
             print(f"  [WARNING] No continuous test windows found for basin {basin}. Skipping.")
             continue
-            
+
         timestamps, actual_flows, pred_leads_dict = basin_data
-        
+
         # Compile final consolidated data report
-        build_and_export_report(basin, output_dir, timestamps, actual_flows, pred_leads_dict, config)
+        df = build_and_export_report(basin, output_dir, timestamps, actual_flows, pred_leads_dict, config)
+
+        if not use_wandb or df is None:
+            continue
+
+        # Extract hit rate score columns (constant across all rows)
+        score_cols = [c for c in df.columns if c.endswith('_score') and c.startswith('hit_rate_')]
+        basin_metric_dict = {'basin': str(basin)}
+        per_basin_wandb = {}
+        for col in score_cols:
+            val = float(df[col].iloc[0])
+            basin_metric_dict[col] = val
+            per_basin_wandb[f"test/{basin}/{col}"] = val
+            score_accumulator.setdefault(col, []).append(val)
+
+        wandb.log(per_basin_wandb)
+        all_hit_rate_rows.append(basin_metric_dict)
+
+        # Generate and upload time-series hydrograph image
+        image = _plot_basin_timeseries(basin, df, config)
+        wandb.log({f"test/hydrograph/{basin}": image})
+
+    if use_wandb:
+        # Log hit rates table
+        if all_hit_rate_rows:
+            columns = list(all_hit_rate_rows[0].keys())
+            table = wandb.Table(columns=columns)
+            for row in all_hit_rate_rows:
+                table.add_data(*[row[c] for c in columns])
+            wandb.log({"test/hit_rates_table": table})
+
+            # Log aggregate means to summary
+            for col, values in score_accumulator.items():
+                wandb.run.summary[f"test_mean/{col}"] = float(np.mean(values))
+
+        wandb.finish()
 
     print(f"\n[INFO] Testing loop completed successfully.")
     print(f"[INFO] All inference ready CSVs compiled inside: {output_dir}")
