@@ -5,6 +5,7 @@ Description: Hourly Multi-Basin Data Pipeline for Entity-Aware LSTM (EA-LSTM) Fl
 """
 
 import os
+import sys
 import pandas as pd
 import numpy as np
 import torch
@@ -258,6 +259,16 @@ def _build_basin_datasets(basin_ids, config, start_date, end_date):
 # ==============================================================================
 # 4. Main Loader Builder Function
 # ==============================================================================
+def _resolve_num_workers(config):
+    if config.get('num_workers', -1) != -1:
+        return config['num_workers']
+    if 'SLURM_CPUS_PER_TASK' in os.environ:
+        return int(os.environ['SLURM_CPUS_PER_TASK'])
+    if 'google.colab' in sys.modules:
+        return 2
+    return min(max((os.cpu_count() or 1) // 2, 1), 8)
+
+
 def get_dataloader(split_type, config, use_basin_splits=True):
     """
     Creates and packages multi-basin datasets for training or standard batch validation.
@@ -271,7 +282,7 @@ def get_dataloader(split_type, config, use_basin_splits=True):
         israel_dataset, 
         batch_size=config['batch_size'], 
         shuffle=is_shuffle, 
-        num_workers=config['num_workers'],
+        num_workers=_resolve_num_workers(config),
         drop_last=False
     )
     
