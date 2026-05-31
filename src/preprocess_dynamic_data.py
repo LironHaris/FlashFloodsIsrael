@@ -100,6 +100,33 @@ def impute_missing_rain(aligned_df):
     return clean_df
 
 # --------------------------------------------------------------------------------
+# 5. Long NaN Stretch Removal Function
+# --------------------------------------------------------------------------------
+def drop_long_flow_nan_stretches(df, seq_length):
+    """
+    Remove rows belonging to consecutive NaN runs in Flow_m3_sec that exceed seq_length.
+    Returns the cleaned DataFrame and the number of dropped rows.
+    """
+    flow = df['Flow_m3_sec'].values
+    nan_mask = np.isnan(flow)
+
+    padded = np.concatenate([[False], nan_mask, [False]])
+    starts = np.where(~padded[:-1] &  padded[1:])[0]
+    ends   = np.where( padded[:-1] & ~padded[1:])[0]
+
+    drop_positions = []
+    for s, e in zip(starts, ends):
+        if (e - s) > seq_length:
+            drop_positions.extend(range(s, e))
+
+    if not drop_positions:
+        return df, 0
+
+    labels_to_drop = df.index[drop_positions]
+    return df.drop(index=labels_to_drop), len(drop_positions)
+
+
+# --------------------------------------------------------------------------------
 # Central Processing Function
 # --------------------------------------------------------------------------------
 def process_dynamic_data(config):
@@ -141,18 +168,21 @@ def process_dynamic_data(config):
         
         # Step 4: Impute missing rain values with 0
         clean_df = impute_missing_rain(aligned_df)
-        
+
+        # Step 5: Remove NaN stretches longer than seq_length (untrainable dead weight)
+        clean_df, n_dropped = drop_long_flow_nan_stretches(clean_df, seq_length=config['seq_length'])
+
         # Record data for the summary report
         availability_records.append({
-            'gauge_id': file_name.replace('.csv', ''), 
+            'gauge_id': file_name.replace('.csv', ''),
             'availability_pct': flow_available
         })
-        
+
         # Save the processed CSV file
         output_path = os.path.join(output_dir, file_name)
         clean_df.to_csv(output_path, index_label='date')
-        
-        tqdm.write(f"Done {file_name}: Processed from {basin_start_date} to {END_DATE}. {flow_available:.2f}% flow data.")
+
+        tqdm.write(f"Done {file_name}: Processed from {basin_start_date} to {END_DATE}. {flow_available:.2f}% flow data. Dropped {n_dropped} rows (long NaN stretches).")
 
     # Create and save the final availability report
     report_df = pd.DataFrame(availability_records)

@@ -11,6 +11,45 @@ import torch
 from torch.utils.data import Dataset, ConcatDataset, DataLoader
 
 # ==============================================================================
+# 0. NaN Fill Helper
+# ==============================================================================
+def _fill_flow_nan_by_interpolation(flow_array, min_surrounding, max_gap):
+    """
+    Linearly interpolate NaN gaps in a 1-D flow array when:
+      - gap length <= max_gap
+      - at least min_surrounding consecutive non-NaN values exist on both sides
+    Returns a new array with qualifying gaps filled.
+    """
+    flow = flow_array.copy()
+    nan_mask = np.isnan(flow)
+
+    if not nan_mask.any():
+        return flow
+
+    padded = np.concatenate([[False], nan_mask, [False]])
+    starts = np.where(~padded[:-1] &  padded[1:])[0]
+    ends   = np.where( padded[:-1] & ~padded[1:])[0]
+
+    n = len(starts)
+    for i, (s, e) in enumerate(zip(starts, ends)):
+        gap_len = e - s
+        if gap_len > max_gap:
+            continue
+
+        left_count  = s         if i == 0     else s - ends[i - 1]
+        right_count = len(flow) - e if i == n - 1 else starts[i + 1] - e
+
+        if left_count < min_surrounding or right_count < min_surrounding:
+            continue
+
+        v_before = flow[s - 1]
+        v_after  = flow[e]
+        flow[s:e] = np.linspace(v_before, v_after, gap_len + 2)[1:-1]
+
+    return flow
+
+
+# ==============================================================================
 # 1. Single Basin Dataset Class
 # ==============================================================================
 class SingleBasinDataset(Dataset):
@@ -46,22 +85,41 @@ class SingleBasinDataset(Dataset):
         # Convert to fast NumPy arrays
         self.x_dynamic = dyn_df[self.dynamic_feature_names].values.astype(np.float32)
         self.y = dyn_df[self.target_cols].values.astype(np.float32)
-        
+
+        # Fill qualifying NaN gaps in flow with linear interpolation
+        min_surrounding = config.get('flow_nan_fill_min_surrounding', 24)
+        max_gap = config.get('flow_nan_fill_max_gap', 72)
+        if 'Flow_m3_sec' in self.target_cols:
+            flow_col_idx = self.target_cols.index('Flow_m3_sec')
+            self.y[:, flow_col_idx] = _fill_flow_nan_by_interpolation(
+                self.y[:, flow_col_idx], min_surrounding, max_gap
+            )
+
         # Slice specific basin row inside the master static matrix file
         basin_static_row = stat_df[stat_df['gauge_id'].astype(str) == self.gauge_id]
         if basin_static_row.empty:
             raise KeyError(f"Gauge ID '{self.gauge_id}' missing in static attributes file: {static_path}")
-            
-        self.x_static = basin_static_row[self.static_feature_names].iloc[0].values.astype(np.float32)        
-        
-        # Calculate valid window boundaries
-        self.num_samples = len(self.x_dynamic) - self.seq_length - max(self.forecast_lead_times) + 1
+
+        self.x_static = basin_static_row[self.static_feature_names].iloc[0].values.astype(np.float32)
+
+        # Build valid sample indices: skip windows where any forecast target is still NaN
+        max_lead = max(self.forecast_lead_times)
+        n_potential = len(self.x_dynamic) - self.seq_length - max_lead + 1
+        self.valid_indices = [
+            i for i in range(max(0, n_potential))
+            if not any(
+                np.isnan(self.y[i + self.seq_length - 1 + lead]).any()
+                for lead in self.forecast_lead_times
+            )
+        ]
+        self.num_samples = len(self.valid_indices)
 
     def __len__(self):
         return max(0, self.num_samples)
 
     def __getitem__(self, idx):
-        target_day = idx + self.seq_length - 1
+        actual_idx = self.valid_indices[idx]
+        target_day = actual_idx + self.seq_length - 1
         start_day = target_day - self.seq_length + 1
         
         window_x_dynamic = self.x_dynamic[start_day : target_day + 1]
@@ -108,11 +166,10 @@ class IsraelBasinsDataset(Dataset):
         
         # Build global index mappings to map any index to its basin and exact datetime
         for ds in self.basin_datasets:
-            ds_len = len(ds)
-            for idx in range(ds_len):
+            for i in range(len(ds)):
                 self.sample_basin_mappings.append(ds.gauge_id)
-                # The prediction time corresponds to the target_day (the 365th step)
-                target_idx = idx + ds.seq_length - 1
+                actual_idx = ds.valid_indices[i]
+                target_idx = actual_idx + ds.seq_length - 1
                 self.sample_date_mappings.append(ds.dates[target_idx])
 
     def __len__(self):
