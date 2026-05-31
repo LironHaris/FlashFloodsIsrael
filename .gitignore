@@ -212,3 +212,4 @@ data/
 runs/
 outputs/
 vscode/
+configs/config.yml

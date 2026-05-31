@@ -11,6 +11,7 @@ experiment_name: israel_flash_floods_ealstm_v1
 # --- Weights & Biases ---
 use_wandb: true
 wandb_project: flash-floods-israel
+wandb_api_key: ""
 
 # place to store run directory (if empty runs are stored in code_dir/runs/)
 run_dir: ./runs/

@@ -237,6 +237,9 @@ def main():
 
     use_wandb = config.get('use_wandb', False) and WANDB_AVAILABLE
     if use_wandb:
+        api_key = config.get('wandb_api_key')
+        if api_key:
+            wandb.login(key=api_key)
         wandb.init(
             project=config.get('wandb_project', 'flash-floods-israel'),
             name=f"{config['experiment_name']}_test",
