@@ -147,14 +147,10 @@ def main():
     print("      Hydrograph Generation & Visualization Engine — Multi-Horizon Slices")
     print("=" * 75)
     
-    # Interactive Prompts with formatting rules
-    print("\n[!] Basin ID Naming Note: Use the prefix 'il_' followed by digits (e.g., il_04, il_567).")
-    basin_id = input("[?] Enter target basin ID: ").strip()
-    
-    print("\n[!] Timestamp Format Note: Use exact 'YYYY-MM-DD HH:MM:SS' layout.")
-    print("    Example: 2022-01-16 04:00:00")
-    start_window = input("[?] Enter Core Storm Start Timestamp: ").strip()
-    end_window = input("[?] Enter Core Storm End Timestamp:   ").strip()
+    plot_cfg = config["plot_hydrographs"]
+    basin_id = plot_cfg["basin_id"]
+    start_window = plot_cfg["start_time"]
+    end_window = plot_cfg["end_time"]
 
     print("\n" + "-" * 75)
     print(f"[INFO] Initializing visual layout compiler for Basin: {basin_id}")

@@ -422,3 +422,9 @@ visual_buffer_days: 4
 
 # --- Multi-Horizon Forecast Settings (In Hours ahead) ---
 forecast_lead_times: [0, 1, 6, 24]
+
+# --- Hydrograph Plot Settings ---
+plot_hydrographs:
+  basin_id: "il_04"
+  start_time: "2022-01-16 04:00:00"
+  end_time: "2022-01-16 16:00:00"
