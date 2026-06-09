@@ -65,99 +65,91 @@ def scan_for_events(basin_id, target_rp, buffer_days, config):
         print(f"  [-] Basin {basin_id} never exceeded the {target_rp}-year threshold during the test split.")
         return []
 
-    # Group consecutive exceedance hours into distinct flood events
+    # Step 1 — find initial exceedance blocks
     df['is_exceedance'] = exceedance_mask.astype(int)
-    # Track continuous events using a cumulative sum on shift changes
     df['event_id'] = (df['is_exceedance'] != df['is_exceedance'].shift()).cumsum()
-    flood_events_df = df[df['is_exceedance'] == 1]
-    
+
+    # Step 2 — collect raw core events (no padding yet)
+    raw_events = []
+    for _, chunk in df[df['is_exceedance'] == 1].groupby('event_id'):
+        raw_events.append({
+            'core_start': chunk['timestamp'].min(),
+            'core_end':   chunk['timestamp'].max(),
+            'peak_flow':  chunk['actual_flow'].max(),
+        })
+
+    # Step 3 — merge events whose inter-event gap is within the configured tolerance
+    merge_gap_hours = config.get('event_merge_gap_hours', 0)
+    if merge_gap_hours > 0 and len(raw_events) > 1:
+        merge_td = pd.Timedelta(hours=merge_gap_hours)
+        merged = [raw_events[0].copy()]
+        for ev in raw_events[1:]:
+            gap = ev['core_start'] - merged[-1]['core_end']
+            if gap <= merge_td:
+                merged[-1]['core_end']  = ev['core_end']
+                merged[-1]['peak_flow'] = max(merged[-1]['peak_flow'], ev['peak_flow'])
+            else:
+                merged.append(ev.copy())
+        raw_events = merged
+
+    print(f"  [★] Found {len(raw_events)} distinct exceedance event(s) for {target_rp}yr RP:")
+
+    # Step 4 — apply padding and format output
     discovered_events = []
-    grouped = flood_events_df.groupby('event_id')
-    
-    print(f"  [★] Found {len(grouped)} distinct exceedance event(s) for {target_rp}yr RP:")
-    
-    for _, event_chunk in grouped:
-        core_start = event_chunk['timestamp'].min()
-        core_end = event_chunk['timestamp'].max()
-        peak_flow = event_chunk['actual_flow'].max()
-        
-        # Apply the visual padding buffer (expanding backwards and forwards in time)
-        padded_start = core_start - pd.Timedelta(days=buffer_days)
-        padded_end = core_end + pd.Timedelta(days=buffer_days)
-        
-        # Constrain padding to dataset boundaries
-        padded_start = max(padded_start, df['timestamp'].min())
-        padded_end = min(padded_end, df['timestamp'].max())
-        
-        event_meta = {
-            'core_start': core_start.strftime('%Y-%m-%d %H:%M:%S'),
-            'core_end': core_end.strftime('%Y-%m-%d %H:%M:%S'),
-            'peak_flow': float(peak_flow),
+    for ev in raw_events:
+        padded_start = max(ev['core_start'] - pd.Timedelta(days=buffer_days), df['timestamp'].min())
+        padded_end   = min(ev['core_end']   + pd.Timedelta(days=buffer_days), df['timestamp'].max())
+
+        discovered_events.append({
+            'core_start':       ev['core_start'].strftime('%Y-%m-%d %H:%M:%S'),
+            'core_end':         ev['core_end'].strftime('%Y-%m-%d %H:%M:%S'),
+            'peak_flow':        float(ev['peak_flow']),
             'plot_ready_start': padded_start.strftime('%Y-%m-%d %H:%M:%S'),
-            'plot_ready_end': padded_end.strftime('%Y-%m-%d %H:%M:%S')
-        }
-        discovered_events.append(event_meta)
-        
-        print(f"      • Event Peak: {peak_flow:.2f} m3/s | Core Duration: [{core_start} -> {core_end}]")
+            'plot_ready_end':   padded_end.strftime('%Y-%m-%d %H:%M:%S'),
+        })
+
+        print(f"      • Event Peak: {ev['peak_flow']:.2f} m3/s | Core Duration: [{ev['core_start']} -> {ev['core_end']}]")
         print(f"        Padded Window for Plotting: '{padded_start}' TO '{padded_end}'")
-        
+
     return discovered_events
 
 
 def main():
     config = load_config("configs/config.yml")
-    
-    # Extract the visual padding buffer from configuration
-    buffer_days = config.get('visual_buffer_days', 4)
-    
+
+    buffer_days   = config.get('visual_buffer_days', 4)
+    return_periods = config.get('return_periods_years', [2, 5, 10, 15, 20, 30])
+    output_path   = config['find_flood_events_output']
+
+    with open(config['test_basin_file']) as f:
+        basins = [line.strip() for line in f if line.strip()]
+
     print("=" * 75)
     print("      Automated Flash Flood Event Scanner — Test Dataset Evaluation")
     print("=" * 75)
-    
-    # Interactive input prompts with explicit format instructions
-    print("\n[!] Basin ID Format Note: Use the naming convention prefix 'il_' followed by digits.")
-    print("    Example for single basin: il_123")
-    print("    Example for multiple basins: il_04, il_5678, il_991234")
-    
-    basin_input = input("\n[?] Enter target basin ID(s) (separate multiple items with a comma): ")
-    # Clean whitespace and parse into a clean list of strings
-    target_basins = [b.strip() for b in basin_input.split(",") if b.strip()]
-    
-    available_rps = config.get('return_periods_years', [2, 5, 10, 15, 20, 30])
-    rp_input = input(f"[?] Enter the target Return Period in years {available_rps}: ")
-    try:
-        target_return_period = int(rp_input.strip())
-    except ValueError:
-        print("\n[ERROR] Return Period must be a valid integer. Execution terminated.")
-        return
-
-    print("\n" + "-" * 75)
-    print(f"[INFO] Initiating automated flood scan for Return Period: {target_return_period} Years")
-    print(f"[INFO] Applied visual padding buffer (drawn from config): {buffer_days} days per window side")
+    print(f"[INFO] Basins: {len(basins)} | Return periods: {return_periods} | Merge gap: {config.get('event_merge_gap_hours', 0)}h")
     print("-" * 75 + "\n")
-    
-    all_extracted_windows = {}
-    
-    # Scan through requested basins sequentially
-    for basin in target_basins:
-        print(f"Scanning Dataset Context for Basin: {basin}...")
-        events = scan_for_events(basin, target_return_period, buffer_days, config)
-        if events:
-            all_extracted_windows[basin] = events
-            
-    # Compile and display ready-to-copy parameters
-    if all_extracted_windows:
-        print("\n" + "=" * 75)
-        print("[SUMMARY] Ready Python inputs to copy directly into plot_hydrographs.py:")
-        print("=" * 75)
-        
-        for basin, events in all_extracted_windows.items():
+
+    rows = []
+    for basin in basins:
+        print(f"Scanning Basin: {basin}...")
+        for rp in return_periods:
+            events = scan_for_events(basin, rp, buffer_days, config)
             for idx, ev in enumerate(events):
-                print(f"\n# Basin {basin} - Event {idx+1} (Peak: {ev['peak_flow']:.1f} m3/s)")
-                print(f"STORM_START = \"{ev['plot_ready_start']}\"")
-                print(f"STORM_END = \"{ev['plot_ready_end']}\"")
-    else:
-        print("\n[-] No threshold exceedance events discovered for the selected configuration in the test split.")
+                rows.append({
+                    "basin_id":            basin,
+                    "return_period_years": rp,
+                    "event_idx":           idx + 1,
+                    "core_start":          ev["core_start"],
+                    "core_end":            ev["core_end"],
+                    "peak_flow":           ev["peak_flow"],
+                    "plot_ready_start":    ev["plot_ready_start"],
+                    "plot_ready_end":      ev["plot_ready_end"],
+                })
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    pd.DataFrame(rows).to_csv(output_path, index=False)
+    print(f"\n[INFO] Wrote {len(rows)} flood events to {output_path}")
 
 
 if __name__ == "__main__":
