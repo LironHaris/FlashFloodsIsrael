@@ -156,7 +156,7 @@ def build_and_export_report(basin, output_dir, timestamps, actual_flows, pred_le
     actuals_np = df['actual_flow'].to_numpy()
     
     # Inject thresholds and map hit rate statistics dynamically
-    for rp_year in config.get('return_periods_years', [2, 5, 10, 15, 20, 30]):
+    for rp_year in config.get('return_periods_years', [2, 5, 10]):
         if rp_year in thresholds:
             thresh_val = thresholds[rp_year]
             df[f'threshold_{rp_year}yr_rp'] = thresh_val  # Static horizontal bar mapping
@@ -189,8 +189,8 @@ def generate_basin_summary_table(basin, df, config, output_dir):
              Flow Exceedances, Hits, Hit Rate, False Alarms, NSE.
     Saves to CSV and prints to stdout. Returns the summary DataFrame.
     """
-    active_leads = config.get('forecast_lead_times', [0, 6, 24])
-    rp_years = config.get('return_periods_years', [2, 5, 10, 15, 20, 30])
+    active_leads = config.get('forecast_lead_times', [0, 1, 2, 3])
+    rp_years = config.get('return_periods_years', [2, 5, 10])
     actuals_np = df['actual_flow'].to_numpy()
     mean_actual = actuals_np.mean()
     ss_tot = float(np.sum((actuals_np - mean_actual) ** 2))
@@ -244,8 +244,8 @@ def generate_basin_summary_table(basin, df, config, output_dir):
 
 def _plot_basin_timeseries(basin, df, config):
     """Generates a full-period time-series figure for a basin and returns it as a wandb.Image."""
-    lead_colors = {0: '#2b8cbe', 1: '#8856a7', 6: '#cb181d', 12: '#86592d', 24: '#f16913'}
-    lead_styles = {0: '-', 1: '--', 6: '--', 12: ':', 24: ':'}
+    lead_colors = {0: '#2b8cbe', 1: '#8856a7', 2: '#cb181d', 3: '#86592d', 24: '#f16913'}
+    lead_styles = {0: '-', 1: '--', 2: '--', 3: ':', 24: ':'}
     threshold_colors = {2: '#bae4b3', 5: '#74c476', 10: '#ef3b2c', 20: '#990000', 30: '#67000d'}
 
     fig, ax = plt.subplots(figsize=(14, 5), facecolor="#fafafa")
@@ -254,7 +254,7 @@ def _plot_basin_timeseries(basin, df, config):
     ax.plot(df['timestamp'], df['actual_flow'], color="#1e1e1e", linewidth=1.8,
             label="Actual Streamflow")
 
-    active_leads = config.get('forecast_lead_times', [0, 6, 24])
+    active_leads = config.get('forecast_lead_times', [0, 1, 2, 3])
     for lead in active_leads:
         col = f"pred_lead_{lead}h"
         if col in df.columns:
@@ -263,7 +263,7 @@ def _plot_basin_timeseries(basin, df, config):
                     linestyle=lead_styles.get(lead, '-'),
                     linewidth=1.2, alpha=0.8, label=f"+{lead}h Lead")
 
-    rp_years = config.get('return_periods_years', [2, 5, 10, 20])
+    rp_years = config.get('return_periods_years', [2, 5, 10])
     for rp in rp_years:
         thresh_col = f"threshold_{rp}yr_rp"
         if thresh_col in df.columns:
