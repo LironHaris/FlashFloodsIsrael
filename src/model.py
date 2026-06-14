@@ -35,15 +35,19 @@ class EALSTMCell(nn.Module):
     Entity-Aware LSTM cell. Uses a constant, externally provided static input gate
     to modulate the flow of time-dependent dynamic inputs into the cell memory.
     """
-    def __init__(self, dynamic_size: int, hidden_size: int):
+    def __init__(self, dynamic_size: int, hidden_size: int, initial_forget_bias: float = 0.0):
         super().__init__()
         self.hidden_size = hidden_size
-        
+
         # Combined dynamic weights for efficiency (Forget Gate, Cell Input, Output Gate)
         self.weight_dynamic_inputs = nn.Linear(dynamic_size, 3 * hidden_size, bias=True)
-        
+
         # Combined recurrent weights (Biases are omitted to avoid redundancy)
         self.weight_hidden_state = nn.Linear(hidden_size, 3 * hidden_size, bias=False)
+
+        # Bias the forget gate toward "remember" at initialization (first chunk of gates_raw)
+        with torch.no_grad():
+            self.weight_dynamic_inputs.bias[:hidden_size] = initial_forget_bias
 
     def forward(self, dynamic_input_t: torch.Tensor, hidden_state_prev: torch.Tensor, 
                 cell_state_prev: torch.Tensor, static_input_gate: torch.Tensor):
@@ -99,7 +103,8 @@ class EALSTMModel(nn.Module):
             nn.Sigmoid()
         )
         
-        self.cell = EALSTMCell(self.dynamic_size, self.hidden_size)
+        self.cell = EALSTMCell(self.dynamic_size, self.hidden_size,
+                               initial_forget_bias=config.get('initial_forget_bias', 0.0))
         self.dropout = nn.Dropout(p=dropout_rate)
         
         # Multi-Horizon Projection Head

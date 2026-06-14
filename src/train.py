@@ -146,7 +146,7 @@ def plot_training_curves(train_losses, val_losses, loss_setting, exp_dir):
     output_path = os.path.join(exp_dir, "loss_training_curves.png")
     plt.savefig(output_path, dpi=300, facecolor="#fafafa")
     plt.close()
-    print(f"\n[✓] Training loss curves chart successfully exported to: {output_path}")
+    print(f"\n[OK] Training loss curves chart successfully exported to: {output_path}")
 
 
 def main():

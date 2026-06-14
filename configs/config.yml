@@ -165,7 +165,7 @@ optimizer: Adam
 
 # specify loss [MSE, NSE, RMSE]
 loss: NSE
-nse_epsilon: 0.1
+nse_epsilon: 1.0
 
 # add regularization terms.
 # Options: tie_frequencies (couples the different frequencies' predictions in an MSE error term)

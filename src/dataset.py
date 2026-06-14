@@ -19,7 +19,8 @@ class SingleBasinDataset(Dataset):
     """
     A PyTorch Dataset that handles the dynamic and static data for a SINGLE basin.
     """
-    def __init__(self, dynamic_path, static_path, config, start_date, end_date, flow_std: float = 1.0):
+    def __init__(self, dynamic_path, static_path, config, start_date, end_date, flow_std: float = 1.0,
+                 static_mean: np.ndarray = None, static_std: np.ndarray = None):
         # Extract basin ID dynamically from filename
         self.gauge_id = str(os.path.basename(dynamic_path).replace('.csv', ''))
         
@@ -57,6 +58,11 @@ class SingleBasinDataset(Dataset):
             raise KeyError(f"Gauge ID '{self.gauge_id}' missing in static attributes file: {static_path}")
 
         self.x_static = basin_static_row[self.static_feature_names].iloc[0].values.astype(np.float32)
+
+        # Z-score normalize static attributes (raw scales span ~-100 to ~1.5e9, which would
+        # otherwise saturate the static_gate_layer's Sigmoid at initialization)
+        if static_mean is not None and static_std is not None:
+            self.x_static = (self.x_static - static_mean) / static_std
 
         # Build valid sample indices: skip windows where any forecast target is still NaN
         max_lead = max(self.forecast_lead_times)
@@ -199,6 +205,17 @@ def _build_basin_datasets(basin_ids, config, start_date, end_date):
     stats_df = pd.read_csv(config['availability_report_file'])
     flow_std_map = dict(zip(stats_df['gauge_id'].astype(str), stats_df['flow_std']))
 
+    # Load per-feature mean/std for z-score normalizing static attributes, aligned to
+    # config['static_attributes'] order (must match SingleBasinDataset.static_feature_names)
+    feature_stats = pd.read_csv(config['feature_stats_file']).set_index('feature')
+    feature_stats = feature_stats.reindex(config['static_attributes'])
+    assert not feature_stats['mean'].isna().any(), \
+        f"Missing entries in {config['feature_stats_file']} for: " \
+        f"{feature_stats[feature_stats['mean'].isna()].index.tolist()}"
+    static_mean = feature_stats['mean'].values.astype(np.float32)
+    static_std = feature_stats['std'].values.astype(np.float32)
+    static_std = np.where(static_std < 1e-6, 1.0, static_std).astype(np.float32)
+
     for basin_id in basin_ids:
         # Dynamic files are stored as [gauge_id].csv based on preprocessing script
         dyn_path = os.path.join(dyn_dir, f"{basin_id}.csv")
@@ -207,7 +224,8 @@ def _build_basin_datasets(basin_ids, config, start_date, end_date):
         if os.path.exists(dyn_path) and os.path.exists(static_file_path):
             flow_std = flow_std_map.get(basin_id, 1.0)
             # Slice specific basin row inside SingleBasinDataset initialization
-            basin_ds = SingleBasinDataset(dyn_path, static_file_path, config, start_date, end_date, flow_std)
+            basin_ds = SingleBasinDataset(dyn_path, static_file_path, config, start_date, end_date, flow_std,
+                                           static_mean=static_mean, static_std=static_std)
             if len(basin_ds) > 0:
                 basin_datasets.append(basin_ds)
         else:
