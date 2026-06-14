@@ -160,7 +160,6 @@ def main():
         
     config = load_config(CONFIG_PATH)
     
-    # מוחק את הקובץ הזמני מיד לאחר הטעינה כדי שלא ישפיע על ריצות אחרות בעתיד
     if os.path.exists("configs/config_temp.yml"):
         try:
             os.remove("configs/config_temp.yml")

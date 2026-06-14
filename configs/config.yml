@@ -210,10 +210,6 @@ predict_last_n: 1
 # If use_frequencies is used, this needs to be a dict mapping each frequency to a seq_length, else an int.
 seq_length: 24
 
-# Flow NaN handling parameters
-flow_nan_fill_min_surrounding: 24   # min consecutive non-NaN values required on each side of a gap
-flow_nan_fill_max_gap: 72           # max consecutive NaN rows eligible for linear interpolation
-
 # Number of parallel workers used in the data pipeline
 num_workers: 2
 
