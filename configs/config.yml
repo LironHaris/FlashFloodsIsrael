@@ -6,7 +6,7 @@
 
 
 # experiment name, used as folder name
-experiment_name: israel_flash_floods_ealstm_v1
+experiment_name: model_0_train_2
 
 # --- Weights & Biases ---
 use_wandb: true

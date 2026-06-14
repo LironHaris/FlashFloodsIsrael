@@ -114,15 +114,19 @@ def scan_for_events(basin_id, target_rp, buffer_days, config):
     return discovered_events
 
 
-def main():
-    config = load_config("configs/config.yml")
+def main(config=None, basin_ids=None):
+    if config is None:
+        config = load_config("configs/config.yml")
 
     buffer_days   = config.get('visual_buffer_days', 4)
     return_periods = config.get('return_periods_years', [2, 5, 10, 15, 20, 30])
     output_path   = config['find_flood_events_output']
 
-    with open(config['test_basin_file']) as f:
-        basins = [line.strip() for line in f if line.strip()]
+    if basin_ids is None:
+        with open(config['test_basin_file']) as f:
+            basins = [line.strip() for line in f if line.strip()]
+    else:
+        basins = list(basin_ids)
 
     print("=" * 75)
     print("      Automated Flash Flood Event Scanner — Test Dataset Evaluation")

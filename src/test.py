@@ -10,7 +10,6 @@ import yaml
 import torch
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 from tqdm import tqdm
 
 try:
@@ -22,6 +21,8 @@ except ImportError:
 # Import local pipeline components
 from model import EALSTMModel
 from dataset import IsraelBasinsDataset
+import plot_hydrographs as ph
+import find_flood_events as ffe
 
 
 def load_config(yaml_path):
@@ -242,49 +243,6 @@ def generate_basin_summary_table(basin, df, config, output_dir):
     return summary_df
 
 
-def _plot_basin_timeseries(basin, df, config):
-    """Generates a full-period time-series figure for a basin and returns it as a wandb.Image."""
-    lead_colors = {0: '#2b8cbe', 1: '#8856a7', 2: '#cb181d', 3: '#86592d', 24: '#f16913'}
-    lead_styles = {0: '-', 1: '--', 2: '--', 3: ':', 24: ':'}
-    threshold_colors = {2: '#bae4b3', 5: '#74c476', 10: '#ef3b2c', 20: '#990000', 30: '#67000d'}
-
-    fig, ax = plt.subplots(figsize=(14, 5), facecolor="#fafafa")
-    ax.set_facecolor("#ffffff")
-
-    ax.plot(df['timestamp'], df['actual_flow'], color="#1e1e1e", linewidth=1.8,
-            label="Actual Streamflow")
-
-    active_leads = config.get('forecast_lead_times', [0, 1, 2, 3])
-    for lead in active_leads:
-        col = f"pred_lead_{lead}h"
-        if col in df.columns:
-            ax.plot(df['timestamp'], df[col],
-                    color=lead_colors.get(lead, '#7f7f7f'),
-                    linestyle=lead_styles.get(lead, '-'),
-                    linewidth=1.2, alpha=0.8, label=f"+{lead}h Lead")
-
-    rp_years = config.get('return_periods_years', [2, 5, 10])
-    for rp in rp_years:
-        thresh_col = f"threshold_{rp}yr_rp"
-        if thresh_col in df.columns:
-            thresh_val = df[thresh_col].iloc[0]
-            if thresh_val > 0:
-                ax.axhline(y=thresh_val, color=threshold_colors.get(rp, '#d9d9d9'),
-                           linestyle="-.", linewidth=1.0, alpha=0.85,
-                           label=f"{rp}yr RP ({thresh_val:.1f} m³/s)")
-
-    ax.set_title(f"Test Period — Basin {basin}", fontsize=11, fontweight='bold', color="#2c3e50")
-    ax.set_xlabel("Date", fontsize=9)
-    ax.set_ylabel("Discharge (m³/s)", fontsize=9)
-    ax.grid(True, linestyle=":", alpha=0.4, color="#b0b0b0")
-    ax.legend(fontsize=8, loc="upper right", frameon=True)
-    plt.tight_layout()
-
-    image = wandb.Image(fig, caption=f"Basin {basin} — full test period")
-    plt.close(fig)
-    return image
-
-
 def main():
     # Step 1: Config ingestion and model setup
     config = load_config("configs/config.yml")
@@ -315,6 +273,7 @@ def main():
 
     all_hit_rate_rows = []   # accumulates rows for wandb.Table
     score_accumulator = {}   # {col_name: [values]} for computing means
+    nse_accumulator = {lead: [] for lead in config.get('forecast_lead_times', [0, 1, 2, 3])}
 
     for basin in test_basins:
         print(f"Processing Basin Context: {basin}")
@@ -337,6 +296,14 @@ def main():
         # Generate per-basin summary table (always, not gated on W&B)
         summary_df = generate_basin_summary_table(basin, df, config, output_dir)
 
+        # Collect per-lead NSE for cross-basin CDF plots
+        for lead in nse_accumulator:
+            lead_rows = summary_df[summary_df['Lead Time (h)'] == lead]
+            if not lead_rows.empty:
+                nse_val = lead_rows['NSE'].iloc[0]
+                if nse_val is not None and not (isinstance(nse_val, float) and np.isnan(nse_val)):
+                    nse_accumulator[lead].append(nse_val)
+
         if not use_wandb:
             continue
 
@@ -356,9 +323,9 @@ def main():
             wtable.add_data(*row.tolist())
         wandb.log({f"test/summary_table/{basin}": wtable})
 
-        # Generate and upload time-series hydrograph image
-        image = _plot_basin_timeseries(basin, df, config)
-        wandb.log({f"test/hydrograph/{basin}": image})
+        # Generate and upload interactive Plotly hydrograph
+        fig = ph.plot_basin_full_history(basin, df, config)
+        wandb.log({f"test/hydrograph/{basin}": wandb.Html(fig.to_html(include_plotlyjs='cdn'))})
 
     if use_wandb:
         # Log hit rates table
@@ -372,6 +339,29 @@ def main():
             # Log aggregate means to summary
             for col, values in score_accumulator.items():
                 wandb.run.summary[f"test_mean/{col}"] = float(np.mean(values))
+
+        # Scan for flood events and plot each one
+        print("\n[INFO] Scanning for flood events across all basins...")
+        ffe.main(config=config, basin_ids=test_basins)
+
+        events_path = config['find_flood_events_output']
+        if os.path.exists(events_path):
+            events_df = pd.read_csv(events_path)
+            for _, event in events_df.iterrows():
+                basin = str(event['basin_id'])
+                fig = ph.plot_basin_storm_event(basin, event['core_start'], event['core_end'], config)
+                if fig is not None:
+                    rp  = int(event['return_period_years'])
+                    idx = int(event['event_idx'])
+                    key = f"test/flood_events/{basin}/rp{rp}yr_event{idx}"
+                    wandb.log({key: wandb.Html(fig.to_html(include_plotlyjs='cdn'))})
+
+        # Generate and upload NSE empirical CDF charts (one per lead time)
+        print("\n[INFO] Generating NSE CDF charts per lead time...")
+        for lead, nse_vals in nse_accumulator.items():
+            cdf_fig = ph.plot_nse_cdf(lead, nse_vals)
+            if cdf_fig:
+                wandb.log({f"test/nse_cdf/lead_{lead}h": wandb.Html(cdf_fig.to_html(include_plotlyjs='cdn'))})
 
         wandb.finish()
 
