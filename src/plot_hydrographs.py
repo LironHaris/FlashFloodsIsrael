@@ -73,6 +73,10 @@ def _build_hydrograph_figure(plot_df, title, config, rp_filter=None):
         paper_bgcolor='#fafafa',
         legend=dict(font=dict(size=10)),
         hovermode='x unified',
+        autosize=False,
+        width=1200,
+        height=550,
+        margin=dict(l=60, r=40, t=80, b=50),
     )
     return fig
 
@@ -158,6 +162,10 @@ def plot_nse_cdf(lead, nse_values):
         yaxis=dict(range=[0, 1]),
         plot_bgcolor='#ffffff',
         paper_bgcolor='#fafafa',
+        autosize=False,
+        width=800,
+        height=550,
+        margin=dict(l=60, r=40, t=80, b=50),
     )
     return fig
 
