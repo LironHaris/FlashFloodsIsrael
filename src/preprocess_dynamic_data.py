@@ -172,10 +172,14 @@ def process_dynamic_data(config):
         # Step 5: Remove NaN stretches longer than seq_length (untrainable dead weight)
         clean_df, n_dropped = drop_long_flow_nan_stretches(clean_df, seq_length=config['seq_length'])
 
+        # Compute per-basin flow std (np.nanstd ignores NaN entries)
+        flow_std = float(np.nanstd(clean_df['Flow_m3_sec'].values))
+
         # Record data for the summary report
         availability_records.append({
             'gauge_id': file_name.replace('.csv', ''),
-            'availability_pct': flow_available
+            'availability_pct': flow_available,
+            'flow_std': flow_std,
         })
 
         # Save the processed CSV file

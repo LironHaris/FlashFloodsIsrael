@@ -15,6 +15,7 @@ import wandb
 
 from model import EALSTMModel
 from dataset import get_dataloader
+from loss import NSELoss, BatchAwareLossWrapper
 
 
 def load_config(yaml_path):
@@ -69,7 +70,7 @@ def train_epoch(model, dataloader, optimizer, criterion, device, config):
         optimizer.zero_grad()
         predictions = model(x_dynamic, x_static)
         
-        loss = criterion(predictions, targets)
+        loss = criterion(predictions, targets, batch)
         loss.backward()
         
         # Gradient Stabilization via Norm Clipping
@@ -98,21 +99,20 @@ def validate_epoch(model, dataloader, criterion, device, config):
             targets = batch['target'].to(device)
             
             predictions = model(x_dynamic, x_static)
-            loss = criterion(predictions, targets)
-            
+            loss = criterion(predictions, targets, batch)
+
             running_val_loss += loss.item()
             
     return running_val_loss / len(dataloader)
 
 
-def get_loss_criterion(loss_name: str):
+def get_loss_criterion(loss_name: str, config: dict) -> BatchAwareLossWrapper:
     """Dynamically instantiates the target loss function based on config string."""
     name = loss_name.upper()
-    if name == 'MSE' or name == 'RMSE':
-        return nn.MSELoss()
+    if name in ('MSE', 'RMSE'):
+        return BatchAwareLossWrapper(nn.MSELoss(), uses_basin_std=False)
     elif name == 'NSE':
-        print("[WARNING] NSE selected. Falling back to MSE until custom NSE class is integrated.")
-        return nn.MSELoss()
+        return BatchAwareLossWrapper(NSELoss(epsilon=config.get('nse_epsilon', 0.1)), uses_basin_std=True)
     else:
         raise ValueError(f"Unsupported loss function specified in config: {loss_name}")
 
@@ -189,7 +189,7 @@ def main():
     model = EALSTMModel(config).to(device)
     
     loss_setting = config.get('loss', 'MSE')
-    criterion = get_loss_criterion(loss_setting)
+    criterion = get_loss_criterion(loss_setting, config)
     print(f"[INFO] Optimization criterion set to: {loss_setting}")
     
     lr_schedule = config['learning_rate']

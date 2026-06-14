@@ -19,7 +19,7 @@ class SingleBasinDataset(Dataset):
     """
     A PyTorch Dataset that handles the dynamic and static data for a SINGLE basin.
     """
-    def __init__(self, dynamic_path, static_path, config, start_date, end_date):
+    def __init__(self, dynamic_path, static_path, config, start_date, end_date, flow_std: float = 1.0):
         # Extract basin ID dynamically from filename
         self.gauge_id = str(os.path.basename(dynamic_path).replace('.csv', ''))
         
@@ -38,6 +38,8 @@ class SingleBasinDataset(Dataset):
         # Store index dates for evaluation alignment
         self.dates = dyn_df.index
         
+        self.flow_std = np.float32(flow_std)
+
         # Extract configurations
         self.seq_length = config['seq_length']
         self.dynamic_feature_names = config['dynamic_inputs']
@@ -89,7 +91,8 @@ class SingleBasinDataset(Dataset):
         return {
             'dynamic': torch.tensor(window_x_dynamic),
             'static': torch.tensor(self.x_static),
-            'target': torch.tensor(target_y)
+            'target': torch.tensor(target_y),
+            'basin_std': torch.tensor(self.flow_std, dtype=torch.float32),
         }
 
 
@@ -192,14 +195,19 @@ def _build_basin_datasets(basin_ids, config, start_date, end_date):
     static_file_path = config['static_attributes_file']
     basin_datasets = []
 
+    # Load per-basin flow stds written by preprocess_dynamic_data.py
+    stats_df = pd.read_csv(config['availability_report_file'])
+    flow_std_map = dict(zip(stats_df['gauge_id'].astype(str), stats_df['flow_std']))
+
     for basin_id in basin_ids:
         # Dynamic files are stored as [gauge_id].csv based on preprocessing script
         dyn_path = os.path.join(dyn_dir, f"{basin_id}.csv")
-        
+
         # Safeguard verification: ensuring both dynamic sequence data and master static metrics exist
         if os.path.exists(dyn_path) and os.path.exists(static_file_path):
+            flow_std = flow_std_map.get(basin_id, 1.0)
             # Slice specific basin row inside SingleBasinDataset initialization
-            basin_ds = SingleBasinDataset(dyn_path, static_file_path, config, start_date, end_date)
+            basin_ds = SingleBasinDataset(dyn_path, static_file_path, config, start_date, end_date, flow_std)
             if len(basin_ds) > 0:
                 basin_datasets.append(basin_ds)
         else:
