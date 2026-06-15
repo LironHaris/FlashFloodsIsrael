@@ -25,8 +25,12 @@ The statistical pipeline is structured into three consecutive steps:
    - Theoretical Quantile: x_T = GEV_isf(1 / T, c, loc, scale)
 
 Safeguards & Constraints:
-- Minimal Data Sufficiency: Computations are bypassed via 'min_years_for_gev' if a basin's 
+- Minimal Data Sufficiency: Computations are bypassed via 'min_years_for_gev' if a basin's
    valid record length is insufficient to construct stable parametric curves.
+- Plausibility Check: For each fitted series, the theoretical value at the largest configured
+   return period is compared against 'gev_plausibility_scalar' times the largest observed
+   annual maximum. Exceeding this threshold prints a warning, flagging likely GEV fitting
+   instability (e.g. from small or zero-inflated samples).
 """
 
 import pandas as pd
@@ -92,8 +96,25 @@ def calculate_theoretical_gev_return_periods(series, target_return_periods):
         'Return_Period_Years': target_return_periods,
         'Theoretical_Value': theoretical_levels
     })
-    
+
     return theoretical_df
+
+def check_return_period_plausibility(empirical_df, theoretical_df, scalar, basin_id, series_name):
+    """
+    Warn if the theoretical value at the largest configured return period exceeds
+    `scalar` times the largest observed annual maximum, flagging likely GEV
+    fitting instability (e.g. from small or zero-inflated samples).
+    """
+    max_observed = empirical_df['Value'].iloc[0]
+    max_t_row = theoretical_df.loc[theoretical_df['Return_Period_Years'].idxmax()]
+    max_t = max_t_row['Return_Period_Years']
+    theoretical_val = max_t_row['Theoretical_Value']
+
+    threshold = max_observed * scalar
+    if theoretical_val > threshold:
+        print(f"[WARNING] {basin_id} - {series_name}: T{int(max_t)} theoretical value "
+              f"({theoretical_val:.3f}) exceeds {scalar}x max observed annual maximum "
+              f"({max_observed:.3f}) -> threshold {threshold:.3f}.")
 
 def fit_gev_and_calculate_returns(series, target_return_periods, min_years):
     """
@@ -101,7 +122,8 @@ def fit_gev_and_calculate_returns(series, target_return_periods, min_years):
     for an Annual Maxima series. Safeguarded by a data sufficiency check.
     """
     series = series.dropna()
-    
+    series = series[series > 0]
+
     if len(series) < min_years:
         return None, None
         
@@ -149,22 +171,24 @@ def extract_annual_maxima(df):
         'Daily_Rain': daily_am['hourly_precipitation']
     }
 
-def save_basin_results(annual_maxima_dict, basin_out_dir, target_periods, min_years):
+def save_basin_results(annual_maxima_dict, basin_out_dir, target_periods, min_years, plausibility_scalar):
     """
     Iterates through extracted maxima series, passes them to the statistical engine,
     and writes results to disk if thresholds are met.
     """
     os.makedirs(basin_out_dir, exist_ok=True)
     valid_computations = 0
-    
+    basin_id = os.path.basename(basin_out_dir)
+
     for name, series in annual_maxima_dict.items():
         emp_df, theo_df = fit_gev_and_calculate_returns(series, target_periods, min_years)
-        
+
         if emp_df is not None:
+            check_return_period_plausibility(emp_df, theo_df, plausibility_scalar, basin_id, name)
             emp_df.to_csv(os.path.join(basin_out_dir, f'{name}_empirical_AM.csv'), index_label='Hydro_Year')
             theo_df.to_csv(os.path.join(basin_out_dir, f'{name}_theoretical_GEV.csv'), index=False)
             valid_computations += 1
-            
+
     return valid_computations > 0
 
 # --------------------------------------------------------------------------------
@@ -179,17 +203,18 @@ def process_basin_extremes(file_path, output_dir, config):
     hydro_start = config.get('hydro_year_start_month', 10)
     target_periods = config['return_periods_years']
     min_years = config.get('min_years_for_gev', 5)
-    
+    plausibility_scalar = config.get('gev_plausibility_scalar', 10)
+
     # Step 1: Load data and tag hydrological years
     df, gauge_id = load_and_prepare_basin_data(file_path, hydro_start)
-    
+
     # Step 2: Resample and extract the 4 extreme series
     annual_maxima_dict = extract_annual_maxima(df)
-    
+
     # Step 3: Fit statistical distributions and export data
     basin_out_dir = os.path.join(output_dir, gauge_id)
-    is_successful = save_basin_results(annual_maxima_dict, basin_out_dir, target_periods, min_years)
-    
+    is_successful = save_basin_results(annual_maxima_dict, basin_out_dir, target_periods, min_years, plausibility_scalar)
+
     return is_successful
 
 def main(config):
