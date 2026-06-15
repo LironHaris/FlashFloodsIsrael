@@ -25,4 +25,3 @@ tqdm>=4.66.0
 colorama==0.4.6
 tensorboard>=2.17.0
 matplotlib>=3.9.0
-plotly>=5.0.0

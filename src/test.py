@@ -10,6 +10,7 @@ import yaml
 import torch
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
 from tqdm import tqdm
 
 try:
@@ -325,9 +326,10 @@ def main():
             wtable.add_data(*row.tolist())
         wandb.log({f"test/summary_table/{basin}": wtable})
 
-        # Generate and upload interactive Plotly hydrograph
+        # Generate and upload static hydrograph
         fig = ph.plot_basin_full_history(basin, df, config)
-        wandb.log({f"test/hydrograph/{basin}": wandb.Html(fig.to_html(include_plotlyjs='cdn'))})
+        wandb.log({f"test/hydrograph/{basin}": wandb.Image(fig)})
+        plt.close(fig)
 
     if use_wandb:
         # Log hit rates table
@@ -356,14 +358,16 @@ def main():
                     rp  = int(event['return_period_years'])
                     idx = int(event['event_idx'])
                     key = f"test/flood_events/{basin}/rp{rp}yr_event{idx}"
-                    wandb.log({key: wandb.Html(fig.to_html(include_plotlyjs='cdn'))})
+                    wandb.log({key: wandb.Image(fig)})
+                    plt.close(fig)
 
         # Generate and upload NSE empirical CDF charts (one per lead time)
         print("\n[INFO] Generating NSE CDF charts per lead time...")
         for lead, nse_vals in nse_accumulator.items():
-            cdf_fig = ph.plot_nse_cdf(lead, nse_vals)
+            cdf_fig = ph.plot_nse_cdf(lead, nse_vals, config)
             if cdf_fig:
-                wandb.log({f"test/nse_cdf/lead_{lead}h": wandb.Html(cdf_fig.to_html(include_plotlyjs='cdn'))})
+                wandb.log({f"test/nse_cdf/lead_{lead}h": wandb.Image(cdf_fig)})
+                plt.close(cdf_fig)
 
         wandb.finish()
 
