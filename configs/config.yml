@@ -82,7 +82,7 @@ output_activation: linear
 
 # define embedding network for static inputs
 statics_embedding:
-  type: None #fc
+  type: one_hot #fc
   # define number of neurons per layer in the FC network used as embedding network
   hiddens:
     - 30

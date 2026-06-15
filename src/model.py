@@ -98,11 +98,17 @@ class EALSTMModel(nn.Module):
         dropout_rate = config['output_dropout']
         
         # Static Embedding Layer (Computes the static input gate)
-        self.static_gate_layer = nn.Sequential(
-            nn.Linear(self.static_size, self.hidden_size),
-            nn.Sigmoid()
-        )
-        
+        statics_embedding_type = config.get('statics_embedding', {}).get('type')
+        if statics_embedding_type == 'one_hot':
+            self.static_gate_layer = nn.Sequential(
+                nn.Linear(self.static_size, self.hidden_size),
+                nn.Sigmoid()
+            )
+        else:
+            print(f"[WARNING] No static embedding defined for statics_embedding.type='{statics_embedding_type}'. "
+                  f"Static input gate disabled (model will run without entity-aware conditioning).")
+            self.static_gate_layer = None
+
         self.cell = EALSTMCell(self.dynamic_size, self.hidden_size,
                                initial_forget_bias=config.get('initial_forget_bias', 0.0))
         self.dropout = nn.Dropout(p=dropout_rate)
@@ -122,7 +128,10 @@ class EALSTMModel(nn.Module):
         cell_state = torch.zeros(batch_size, self.hidden_size, device=device)
         
         # Compute the catchment-specific static input gate exactly once per sequence
-        static_input_gate = self.static_gate_layer(x_static)
+        if self.static_gate_layer is not None:
+            static_input_gate = self.static_gate_layer(x_static)
+        else:
+            static_input_gate = torch.ones(batch_size, self.hidden_size, device=device)
         
         # Sequential Bounded Time Loop Execution
         for t in range(seq_length):

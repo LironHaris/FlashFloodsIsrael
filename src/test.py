@@ -124,7 +124,9 @@ def evaluate_basin_sequences(basin, test_dataset, model, device, config):
             target = sample['target']  # Extracted ground truth vector
             
             # Forward Pass (Blinded from IDs and timestamps)
-            prediction = model(x_dynamic, x_static).squeeze(0).numpy()
+            # Streamflow is physically non-negative; clamp here rather than in the model
+            # so training (and its gradients) remain unconstrained.
+            prediction = torch.clamp(model(x_dynamic, x_static).squeeze(0), min=0).numpy()
             
             # Metadata tracking collection (Outside model execution space)
             timestamps.append(test_dataset.sample_date_mappings[idx])
