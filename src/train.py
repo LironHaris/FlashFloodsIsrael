@@ -80,7 +80,7 @@ def train_epoch(model, dataloader, optimizer, criterion, device, config):
         # Regularization: Target Noise Injection (Train phase only)
         if model.training and noise_std > 0:
             noise = torch.randn_like(targets) * noise_std
-            targets = targets + noise
+            targets = torch.clamp(targets + noise, min=0.0)
 
         # Optimization Step
         optimizer.zero_grad()
