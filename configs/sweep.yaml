@@ -1,4 +1,5 @@
 program: src/run_sweep.py
+project: flash-floods-israel
 method: bayes
 metric:
   goal: minimize
@@ -10,8 +11,6 @@ parameters:
     distribution: uniform
     min: 0.1
     max: 0.5
-  loss:
-    values: [NSE, MSE]
   nse_epsilon:
     distribution: log_uniform_values
     min: 0.1
@@ -28,5 +27,3 @@ parameters:
     max: 0.05
   clip_gradient_norm:
     values: [0.5, 1.0, 2.0, 5.0]
-  seq_length:
-    values: [48, 72, 96, 168]

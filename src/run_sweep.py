@@ -34,14 +34,17 @@ def load_config(yaml_path):
 
 
 def run_trial():
-    api_key = load_config("configs/config.yml").get('wandb_api_key')
+    base_config = load_config("configs/config.yml")
+    sweep_config = load_config("configs/sweep.yaml")
+
+    api_key = base_config.get('wandb_api_key')
     if api_key:
         wandb.login(key=api_key)
 
-    wandb.init()
+    wandb.init(project=sweep_config.get('project'))
 
     # Load base config and apply swept hyperparameters
-    config = load_config("configs/config.yml")
+    config = base_config
     config.update(dict(wandb.config))
 
     # initial_lr (scalar swept value) overrides the epoch-0 entry in the milestone dict

@@ -116,12 +116,16 @@ def compute_nse_per_basin(basin, test_dataset, model, device, config):
 # ==============================================================================
 # 5. CDF comparison plot
 # ==============================================================================
-def build_run_label(rank, run, config):
-    h    = run.config.get('hidden_size', config.get('hidden_size', '?'))
-    loss = run.config.get('loss', config.get('loss', '?'))
-    seq  = run.config.get('seq_length', config.get('seq_length', '?'))
-    val  = run.summary.get('best_val_loss', float('nan'))
-    return f"#{rank}  h={h}  {loss}  seq={seq}  val={val:.4f}"
+def build_run_label(rank, run, config, sweep_params):
+    val = run.summary.get('best_val_loss', float('nan'))
+    parts = [f"#{rank}"]
+    for param in sweep_params:
+        v = run.config.get(param, config.get(param, '?'))
+        if isinstance(v, float):
+            v = f"{v:.4g}"
+        parts.append(f"{param}={v}")
+    parts.append(f"val={val:.4f}")
+    return "  ".join(parts)
 
 
 def plot_cdf_comparison(lead, run_nse_list, output_dir):
@@ -182,12 +186,13 @@ def main():
     args = parser.parse_args()
 
     base_config = load_config('configs/config.yml')
+    sweep_config = load_config('configs/sweep.yaml')
 
     api_key = base_config.get('wandb_api_key')
     if api_key:
         wandb.login(key=api_key)
 
-    project = base_config.get('wandb_project', 'flash-floods-israel')
+    project = sweep_config.get('project', base_config.get('wandb_project', 'flash-floods-israel'))
     print(f"[INFO] Fetching top {args.top} runs from sweep {project}/{args.sweep_id} ...")
     top_runs = fetch_top_runs(project, args.sweep_id, args.top)
     print(f"[INFO] Found {len(top_runs)} valid completed runs.\n")
@@ -199,6 +204,8 @@ def main():
         f'sweep_comparison_{args.sweep_id}'
     )
     os.makedirs(output_dir, exist_ok=True)
+
+    sweep_params = list(sweep_config.get('parameters', {}).keys())
 
     lead_times = base_config.get('forecast_lead_times', [0, 1, 2, 3])
     # {lead: [(label, [nse_values]), ...]}
@@ -229,7 +236,7 @@ def main():
                 if lead in nse_by_lead:
                     nse_accumulator[lead].append(nse_by_lead[lead])
 
-        label = build_run_label(rank, run, config)
+        label = build_run_label(rank, run, config, sweep_params)
         for lead in lead_times:
             nse_per_lead[lead].append((label, nse_accumulator[lead]))
 
