@@ -111,50 +111,51 @@ def evaluate_basin_sequences(basin, test_dataset, model, device, config):
         return None
 
     timestamps = []
-    actual_flows = []
-    # Instantiate internal collection arrays for each lead time
-    pred_leads_dict = {f"pred_lead_{lead}h": [] for lead in config['forecast_lead_times']}
+    # Per-lead actual flows: actual_lead_kh stores observed flow at t+k
+    actual_leads_dict = {f"actual_lead_{lead}h": [] for lead in config['forecast_lead_times']}
+    pred_leads_dict   = {f"pred_lead_{lead}h":   [] for lead in config['forecast_lead_times']}
 
     with torch.no_grad():
         for idx in tqdm(basin_indices, desc=f"  Evaluating Basin {basin}", leave=False):
             sample = test_dataset[idx]
-            
+
             # Enforce batch dimension [1, seq_length, features]
             x_dynamic = sample['dynamic'].unsqueeze(0).to(device)
             x_static = sample['static'].unsqueeze(0).to(device)
-            target = sample['target']  # Extracted ground truth vector
-            
+            target = sample['target']  # [actual_t+0, actual_t+1, actual_t+2, ...]
+
             # Forward Pass (Blinded from IDs and timestamps)
             # Streamflow is physically non-negative; clamp here rather than in the model
             # so training (and its gradients) remain unconstrained.
             prediction = torch.clamp(model(x_dynamic, x_static).squeeze(0), min=0).numpy()
-            
+
             # Metadata tracking collection (Outside model execution space)
             timestamps.append(test_dataset.sample_date_mappings[idx])
-            actual_flows.append(target[0].item())  # Ground truth flow at current hour
-            
-            # Unpack lead-time prediction slices
+
+            # Unpack both actual and predicted flows per lead time
             for i, lead in enumerate(config['forecast_lead_times']):
+                actual_leads_dict[f"actual_lead_{lead}h"].append(target[i].item())
                 pred_leads_dict[f"pred_lead_{lead}h"].append(prediction[i])
-                
-    return timestamps, actual_flows, pred_leads_dict
+
+    return timestamps, actual_leads_dict, pred_leads_dict
 
 
-def build_and_export_report(basin, output_dir, timestamps, actual_flows, pred_leads_dict, config):
+def build_and_export_report(basin, output_dir, timestamps, actual_leads_dict, pred_leads_dict, config):
     """
-    Assembles predictions, injects static GEV thresholds, computes localized hit-rate 
+    Assembles predictions, injects static GEV thresholds, computes localized hit-rate
     metrics per lead time, and commits a clean sorted report dataframe to a CSV file.
     """
-    # Initialize basic dataframe structure
-    df = pd.DataFrame({
-        'timestamp': timestamps,
-        'actual_flow': actual_flows
-    })
-    
-    # Append multi-horizon outputs
+    # Initialize dataframe with per-lead actual columns
+    df = pd.DataFrame({'timestamp': timestamps})
+    for col_name, values in actual_leads_dict.items():
+        df[col_name] = values
+    # 'actual_flow' alias for lead-0: used by hydrograph plots and threshold metrics
+    df['actual_flow'] = df['actual_lead_0h']
+
+    # Append multi-horizon prediction outputs
     for col_name, values in pred_leads_dict.items():
         df[col_name] = values
-        
+
     # Ingest historical extreme value return period benchmarks for this basin
     thresholds = load_basin_return_periods(basin, config)
     actuals_np = df['actual_flow'].to_numpy()
@@ -195,16 +196,16 @@ def generate_basin_summary_table(basin, df, config, output_dir):
     """
     active_leads = config.get('forecast_lead_times', [0, 1, 2, 3])
     rp_years = config.get('return_periods_years', [2, 5, 10])
-    actuals_np = df['actual_flow'].to_numpy()
-    mean_actual = actuals_np.mean()
-    ss_tot = float(np.sum((actuals_np - mean_actual) ** 2))
 
-    # Pre-compute NSE per lead time (full test period, not threshold-specific)
+    # NSE per lead time: compare pred_lead_kh against actual_lead_kh (observed flow at t+k)
     nse_per_lead = {}
     for lead in active_leads:
-        col = f"pred_lead_{lead}h"
-        if col in df.columns:
-            preds_np = df[col].to_numpy()
+        actual_col = f"actual_lead_{lead}h"
+        pred_col   = f"pred_lead_{lead}h"
+        if actual_col in df.columns and pred_col in df.columns:
+            actuals_np  = df[actual_col].to_numpy()
+            preds_np    = df[pred_col].to_numpy()
+            ss_tot = float(np.sum((actuals_np - actuals_np.mean()) ** 2))
             ss_res = float(np.sum((actuals_np - preds_np) ** 2))
             nse_per_lead[lead] = round(1.0 - ss_res / ss_tot, 4) if ss_tot > 0 else float('nan')
 
@@ -288,10 +289,10 @@ def main():
             print(f"  [WARNING] No continuous test windows found for basin {basin}. Skipping.")
             continue
 
-        timestamps, actual_flows, pred_leads_dict = basin_data
+        timestamps, actual_leads_dict, pred_leads_dict = basin_data
 
         # Compile final consolidated data report
-        df = build_and_export_report(basin, output_dir, timestamps, actual_flows, pred_leads_dict, config)
+        df = build_and_export_report(basin, output_dir, timestamps, actual_leads_dict, pred_leads_dict, config)
 
         if df is None:
             continue

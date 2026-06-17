@@ -93,23 +93,24 @@ def compute_nse_per_basin(basin, test_dataset, model, device, config):
     """
     Runs inference for one basin and returns a {lead: nse} dict.
     Returns None if the basin has no valid windows or zero variance.
+    NSE at lead k compares pred_lead_kh against actual_lead_kh (observed flow at t+k).
     """
     result = evaluate_basin_sequences(basin, test_dataset, model, device, config)
     if result is None:
         return None
 
-    timestamps, actual_flows, pred_leads_dict = result
-    actuals = np.array(actual_flows)
-    ss_tot = float(np.sum((actuals - actuals.mean()) ** 2))
-    if ss_tot == 0:
-        return None
+    timestamps, actual_leads_dict, pred_leads_dict = result
 
     nse_by_lead = {}
     for lead in config['forecast_lead_times']:
-        preds = np.array(pred_leads_dict[f'pred_lead_{lead}h'])
+        actuals = np.array(actual_leads_dict[f'actual_lead_{lead}h'])
+        preds   = np.array(pred_leads_dict[f'pred_lead_{lead}h'])
+        ss_tot  = float(np.sum((actuals - actuals.mean()) ** 2))
+        if ss_tot == 0:
+            continue
         ss_res = float(np.sum((actuals - preds) ** 2))
         nse_by_lead[lead] = 1.0 - ss_res / ss_tot
-    return nse_by_lead
+    return nse_by_lead if nse_by_lead else None
 
 
 # ==============================================================================
