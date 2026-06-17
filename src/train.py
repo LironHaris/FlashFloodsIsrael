@@ -24,6 +24,22 @@ def load_config(yaml_path):
         return yaml.safe_load(file)
 
 
+def get_tracked_hparams(config):
+    """Return the subset of config keys that genuinely affect model behavior."""
+    keys = [
+        'hidden_size', 'output_dropout', 'initial_forget_bias',
+        'loss', 'nse_epsilon', 'learning_rate', 'initial_lr',
+        'batch_size', 'epochs', 'seed',
+        'target_noise_std', 'clip_gradient_norm',
+        'seq_length', 'forecast_lead_times', 'use_basin_splits',
+    ]
+    tracked = {k: config[k] for k in keys if k in config}
+    tracked['num_static_attributes'] = len(config.get('static_attributes', []))
+    tracked['num_dynamic_inputs']    = len(config.get('dynamic_inputs', []))
+    tracked['statics_embedding_type'] = config.get('statics_embedding', {}).get('type')
+    return tracked
+
+
 def set_seed(seed):
     """Enforce deterministic behavior across runs for scientific reproducibility."""
     if seed is not None:
@@ -208,7 +224,7 @@ def main():
         wandb.init(
             project=config.get('wandb_project', 'flash-floods-israel'),
             name=config['experiment_name'],
-            config=config,
+            config=get_tracked_hparams(config),
         )
 
     # Trackers for saving checkpoints and plotting history

@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from model import EALSTMModel
 from dataset import get_dataloader
-from train import set_seed, train_epoch, validate_epoch, get_loss_criterion, update_learning_rate
+from train import set_seed, train_epoch, validate_epoch, get_loss_criterion, update_learning_rate, get_tracked_hparams
 
 
 def load_config(yaml_path):
@@ -49,6 +49,9 @@ def run_trial():
         lr_schedule = config['learning_rate']
         lr_schedule[0] = float(config['initial_lr'])
         config['learning_rate'] = lr_schedule
+
+    # Push non-swept relevant hparams (epochs, forecast_lead_times, etc.) into the W&B run
+    wandb.config.update(get_tracked_hparams(config))
 
     set_seed(config.get('seed', 42))
 
