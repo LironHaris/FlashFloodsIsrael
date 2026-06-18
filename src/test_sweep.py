@@ -168,9 +168,8 @@ def plot_cdf_comparison(lead, run_nse_list, output_dir):
 
     out_path = os.path.join(output_dir, f'sweep_nse_cdf_lead_{lead}h.png')
     fig.savefig(out_path, dpi=150, facecolor='#fafafa')
-    plt.close(fig)
     print(f"  Saved: {out_path}")
-    return out_path
+    return fig
 
 
 # ==============================================================================
@@ -193,6 +192,14 @@ def main():
         wandb.login(key=api_key)
 
     project = sweep_config.get('project', base_config.get('wandb_project', 'flash-floods-israel'))
+
+    wandb_run = wandb.init(
+        project=project,
+        name=f"sweep_test_{args.sweep_id}",
+        job_type="test",
+        config={"sweep_id": args.sweep_id, "top_n": args.top},
+    )
+
     print(f"[INFO] Fetching top {args.top} runs from sweep {project}/{args.sweep_id} ...")
     top_runs = fetch_top_runs(project, args.sweep_id, args.top)
     print(f"[INFO] Found {len(top_runs)} valid completed runs.\n")
@@ -246,14 +253,26 @@ def main():
         }
         print(f"  Median NSE per lead: {medians}\n")
 
+        if wandb_run is not None:
+            for lead, median_val in medians.items():
+                if median_val is not None:
+                    wandb.run.summary[f"run{rank}_median_nse_lead{lead}h"] = median_val
+
     print("[INFO] Generating CDF comparison plots ...")
     for lead in lead_times:
         if any(vals for _, vals in nse_per_lead[lead]):
-            plot_cdf_comparison(lead, nse_per_lead[lead], output_dir)
+            fig = plot_cdf_comparison(lead, nse_per_lead[lead], output_dir)
+            if fig is not None:
+                if wandb_run is not None:
+                    wandb.log({f"test/nse_cdf/lead_{lead}h": wandb.Image(fig)})
+                plt.close(fig)
         else:
             print(f"  [SKIP] Lead +{lead}h — no NSE values collected.")
 
     print(f"\n[INFO] All plots saved to: {output_dir}")
+
+    if wandb_run is not None:
+        wandb.finish()
 
 
 if __name__ == '__main__':
