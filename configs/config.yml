@@ -185,7 +185,7 @@ batch_size: 256
 epochs: 30
 
 # adds noise with given std to the labels during training. Leave empty or set to 0 if not used.
-target_noise_std: 0.005
+target_noise_std: 0
 
 # If a value, clips the gradients during training to that norm.
 clip_gradient_norm: 1
