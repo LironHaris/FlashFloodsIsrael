@@ -172,19 +172,38 @@ def process_dynamic_data(config):
         # Step 5: Remove NaN stretches longer than seq_length (untrainable dead weight)
         clean_df, n_dropped = drop_long_flow_nan_stretches(clean_df, seq_length=config['seq_length'])
 
-        # Compute per-basin flow std from the training period only (np.nanstd ignores NaN entries).
-        # This is a fixed per-basin normalization constant used by NSELoss for both train and val,
-        # so it must reflect train-period variability, not the full train+val+test series.
+        # Compute per-basin flow mean/std from the training period only (np.nanmean/nanstd ignore
+        # NaN entries). These are fixed per-basin normalization constants used to z-score the flow
+        # target in dataset.py, so they must reflect train-period variability, not the full
+        # train+val+test series. Both are drawn from the same slice/fallback branch so they always
+        # describe the same underlying sample.
         train_slice = clean_df.loc[config.get('train_start_date'):config['train_end_date']]
+        flow_mean = float(np.nanmean(train_slice['Flow_m3_sec'].values))
         flow_std = float(np.nanstd(train_slice['Flow_m3_sec'].values))
         if not np.isfinite(flow_std) or flow_std == 0.0:
+            flow_mean = float(np.nanmean(clean_df['Flow_m3_sec'].values))
             flow_std = float(np.nanstd(clean_df['Flow_m3_sec'].values))
+
+        # Compute per-basin rain mean/std from the same training-period slice. Unlike flow,
+        # rain has no downstream use for the raw values, so the z-score is baked directly into
+        # the saved series below rather than applied on-the-fly in dataset.py.
+        rain_mean = float(np.nanmean(train_slice['hourly_precipitation'].values))
+        rain_std = float(np.nanstd(train_slice['hourly_precipitation'].values))
+        if not np.isfinite(rain_std) or rain_std == 0.0:
+            rain_mean = float(np.nanmean(clean_df['hourly_precipitation'].values))
+            rain_std = float(np.nanstd(clean_df['hourly_precipitation'].values))
+
+        # Bake the rain normalization into the series that gets saved to disk
+        clean_df['hourly_precipitation'] = (clean_df['hourly_precipitation'] - rain_mean) / rain_std
 
         # Record data for the summary report
         availability_records.append({
             'gauge_id': file_name.replace('.csv', ''),
             'availability_pct': flow_available,
+            'flow_mean': flow_mean,
             'flow_std': flow_std,
+            'rain_mean': rain_mean,
+            'rain_std': rain_std,
         })
 
         # Save the processed CSV file

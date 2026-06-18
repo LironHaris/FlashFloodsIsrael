@@ -6,12 +6,9 @@ This script executes a dimensionality reduction and variance exploration workflo
 static geographical and climatological attributes of the targeted hydrological basins. 
 
 Statistical Pipeline & Functional Stages:
-1. Feature Standardization (Z-score Normalization):
-   Since physical attributes span vastly different units and scales (e.g., aridity index vs. 
-   mean precipitation in mm), features are centered and scaled before variance extraction:
-   z = (x - mu) / sigma
-   Where 'mu' is the feature mean and 'sigma' is the standard deviation. This prevents 
-   high-magnitude attributes from artificially dominating the principal orthogonal axes.
+1. Loads the pre-normalized static attributes ('normalized_static_attributes_file'), which
+   preprocess_static_attributes.py already z-scored per feature (across all basins). This
+   keeps PCA operating on the exact same normalized values the model consumes.
 
 2. Dynamic Principal Component Extraction:
    Fits a parametric PCA using Singular Value Decomposition (SVD) to project the scaled 
@@ -27,15 +24,14 @@ Statistical Pipeline & Functional Stages:
    - Projected Data: Transforms the source dataset into the newly derived compact PCA coordinate space.
 
 Operational Context:
-- This pipeline operates strictly on spatial basin attribute arrays ('static_attributes_file') and 
-  is independent of temporal look-back variations or multi-horizon prediction settings.
+- This pipeline operates strictly on spatial basin attribute arrays and is independent of
+  temporal look-back variations or multi-horizon prediction settings.
 """
 
 import pandas as pd
 import numpy as np
 import yaml
 import os
-from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 
 def load_config(yaml_path):
@@ -48,15 +44,14 @@ def run_pca_workflow(input_path, output_dir, variance_threshold):
     Perform standardization and PCA on cleaned attributes to explore feature variance.
     Filters components dynamically to reach the cumulative variance threshold from config.
     """
+    # Input is already z-score normalized per feature (across all basins) by
+    # preprocess_static_attributes.py.
     df = pd.read_csv(input_path)
     ids = df['gauge_id']
     features = df.drop(columns=['gauge_id'])
-    
-    # 1. Standardize features (Z-score normalization)
-    scaler = StandardScaler()
-    scaled_data = scaler.fit_transform(features)
-    
-    # 2. Fit PCA using the specified variance threshold from config
+    scaled_data = features.values
+
+    # 1. Fit PCA using the specified variance threshold from config
     pca = PCA(n_components=variance_threshold)
     projected = pca.fit_transform(scaled_data)
     
@@ -86,18 +81,18 @@ def main(config):
     """
     Load clean static attributes and configuration parameters to run the PCA analysis.
     """
-    clean_data_path = config['static_attributes_file']
+    clean_data_path = config['normalized_static_attributes_file']
     pca_out_dir = config['pca_output_dir']
-    
+
     # Extract variance threshold from configuration, default to 0.95 if not found
     variance_threshold = config.get('pca_variance_threshold', 0.95)
-    
+
     os.makedirs(pca_out_dir, exist_ok=True)
-    
+
     if os.path.exists(clean_data_path):
         run_pca_workflow(clean_data_path, pca_out_dir, variance_threshold)
     else:
-        print(f"[ERROR] Clean static attributes file not found at: {clean_data_path}")
+        print(f"[ERROR] Normalized static attributes file not found at: {clean_data_path}")
 
 if __name__ == "__main__":
     CONFIG_PATH = "configs/config.yml"

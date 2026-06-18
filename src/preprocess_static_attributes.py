@@ -92,6 +92,7 @@ def main(config):
     output_dir = config['processed_static_dir']
     output_nh = config['static_attributes_file']
     output_stats = config['feature_stats_file']
+    output_normalized = config['normalized_static_attributes_file']
 
     # Ensure output directory exists
     os.makedirs(output_dir, exist_ok=True)
@@ -99,21 +100,31 @@ def main(config):
     # Core pipeline execution
     merged = load_and_merge(raw_static_dir)
     final_df = clean_missing_features(merged)
-    
-    # Compute mean and standard deviation for the remaining numerical features
+
+    # Compute mean and standard deviation per feature, across all basins
     numeric_df = final_df.select_dtypes(include=[np.number])
+    mean = numeric_df.mean()
+    std = numeric_df.std()
     stats = pd.DataFrame({
         'feature': numeric_df.columns,
-        'mean': numeric_df.mean(),
-        'std': numeric_df.std()
+        'mean': mean,
+        'std': std
     })
-    
+
+    # Z-score normalize each feature (per-column mean/std over all basins).
+    # Guard against near-zero std (constant features) to avoid divide-by-zero.
+    std_safe = std.where(std >= 1e-6, 1.0)
+    normalized_numeric = (numeric_df - mean) / std_safe
+    normalized_df = pd.concat([final_df[['gauge_id']], normalized_numeric], axis=1)
+
     # Save processed files
     final_df.to_csv(output_nh, index=False)
     stats.to_csv(output_stats, index=False)
-    
+    normalized_df.to_csv(output_normalized, index=False)
+
     print(f"Static attributes saved to: {output_nh}")
     print(f"Feature statistics saved to: {output_stats}")
+    print(f"Normalized static attributes saved to: {output_normalized}")
 
 if __name__ == "__main__":
     CONFIG_PATH = "configs/config.yml"

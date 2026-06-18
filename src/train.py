@@ -15,7 +15,7 @@ import wandb
 
 from model import EALSTMModel
 from dataset import get_dataloader
-from loss import NSELoss, BatchAwareLossWrapper
+from loss import BatchAwareLossWrapper
 
 
 def load_config(yaml_path):
@@ -76,11 +76,16 @@ def train_epoch(model, dataloader, optimizer, criterion, device, config):
         x_dynamic = batch['dynamic'].to(device)
         x_static = batch['static'].to(device)
         targets = batch['target'].to(device)
-        
-        # Regularization: Target Noise Injection (Train phase only)
+
+        # Regularization: Target Noise Injection (Train phase only).
+        # Targets are per-basin z-scored, so raw zero-flow corresponds to -basin_mean/basin_std,
+        # not 0.0 — clamp to that basin-specific floor instead of a literal zero.
         if model.training and noise_std > 0:
+            basin_mean = batch['basin_mean'].to(device)
+            basin_std = batch['basin_std'].to(device)
             noise = torch.randn_like(targets) * noise_std
-            targets = torch.clamp(targets + noise, min=0.0)
+            zero_flow_z = (-basin_mean / basin_std).unsqueeze(1)
+            targets = torch.maximum(targets + noise, zero_flow_z)
 
         # Optimization Step
         optimizer.zero_grad()
@@ -128,7 +133,12 @@ def get_loss_criterion(loss_name: str, config: dict) -> BatchAwareLossWrapper:
     if name in ('MSE', 'RMSE'):
         return BatchAwareLossWrapper(nn.MSELoss(), uses_basin_std=False)
     elif name == 'NSE':
-        return BatchAwareLossWrapper(NSELoss(epsilon=config.get('nse_epsilon', 0.1)), uses_basin_std=True)
+        print("[ERROR] Loss 'NSE' divides by basin_std, which double-normalizes now that "
+              "flow targets are already per-basin z-scored in dataset.py.")
+        raise ValueError(
+            "Loss 'NSE' is incompatible with normalized flow targets. Use 'MSE' or 'RMSE' "
+            "instead (config.yml currently has loss: NSE — update it)."
+        )
     else:
         raise ValueError(f"Unsupported loss function specified in config: {loss_name}")
 

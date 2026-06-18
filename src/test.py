@@ -122,19 +122,23 @@ def evaluate_basin_sequences(basin, test_dataset, model, device, config):
             # Enforce batch dimension [1, seq_length, features]
             x_dynamic = sample['dynamic'].unsqueeze(0).to(device)
             x_static = sample['static'].unsqueeze(0).to(device)
-            target = sample['target']  # [actual_t+0, actual_t+1, actual_t+2, ...]
+            target_raw = sample['target_raw']  # raw m3/s: [actual_t+0, actual_t+1, actual_t+2, ...]
+            basin_mean = sample['basin_mean'].item()
+            basin_std = sample['basin_std'].item()
 
-            # Forward Pass (Blinded from IDs and timestamps)
-            # Streamflow is physically non-negative; clamp here rather than in the model
-            # so training (and its gradients) remain unconstrained.
-            prediction = torch.clamp(model(x_dynamic, x_static).squeeze(0), min=0).numpy()
+            # Forward Pass (Blinded from IDs and timestamps). The model predicts in
+            # per-basin z-scored space, so de-normalize before clamping to physical
+            # non-negative streamflow (clamp here rather than in the model so training
+            # and its gradients remain unconstrained).
+            raw_prediction = model(x_dynamic, x_static).squeeze(0) * basin_std + basin_mean
+            prediction = torch.clamp(raw_prediction, min=0).numpy()
 
             # Metadata tracking collection (Outside model execution space)
             timestamps.append(test_dataset.sample_date_mappings[idx])
 
             # Unpack both actual and predicted flows per lead time
             for i, lead in enumerate(config['forecast_lead_times']):
-                actual_leads_dict[f"actual_lead_{lead}h"].append(target[i].item())
+                actual_leads_dict[f"actual_lead_{lead}h"].append(target_raw[i].item())
                 pred_leads_dict[f"pred_lead_{lead}h"].append(prediction[i])
 
     return timestamps, actual_leads_dict, pred_leads_dict

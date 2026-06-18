@@ -20,7 +20,7 @@ class SingleBasinDataset(Dataset):
     A PyTorch Dataset that handles the dynamic and static data for a SINGLE basin.
     """
     def __init__(self, dynamic_path, static_path, config, start_date, end_date, flow_std: float = 1.0,
-                 static_mean: np.ndarray = None, static_std: np.ndarray = None):
+                 flow_mean: float = 0.0):
         # Extract basin ID dynamically from filename
         self.gauge_id = str(os.path.basename(dynamic_path).replace('.csv', ''))
         
@@ -40,6 +40,7 @@ class SingleBasinDataset(Dataset):
         self.dates = dyn_df.index
         
         self.flow_std = np.float32(flow_std)
+        self.flow_mean = np.float32(flow_mean)
 
         # Extract configurations
         self.seq_length = config['seq_length']
@@ -57,12 +58,9 @@ class SingleBasinDataset(Dataset):
         if basin_static_row.empty:
             raise KeyError(f"Gauge ID '{self.gauge_id}' missing in static attributes file: {static_path}")
 
+        # Static attributes are pre-normalized (z-scored per feature across all basins)
+        # by preprocess_static_attributes.py before this file is loaded.
         self.x_static = basin_static_row[self.static_feature_names].iloc[0].values.astype(np.float32)
-
-        # Z-score normalize static attributes (raw scales span ~-100 to ~1.5e9, which would
-        # otherwise saturate the static_gate_layer's Sigmoid at initialization)
-        if static_mean is not None and static_std is not None:
-            self.x_static = (self.x_static - static_mean) / static_std
 
         # Build valid sample indices: skip windows where any forecast target is still NaN
         max_lead = max(self.forecast_lead_times)
@@ -91,14 +89,19 @@ class SingleBasinDataset(Dataset):
         for lead in self.forecast_lead_times:
             future_hour = target_day + lead
             target_list.append(self.y[future_hour])
-            
-        target_y = np.array(target_list, dtype=np.float32).flatten()
-        
+
+        # self.y stays raw; the normalized target is derived from this same window
+        # on the fly, so raw/normalized values can never disagree on NaN positions.
+        target_raw_y = np.array(target_list, dtype=np.float32).flatten()
+        target_y = (target_raw_y - self.flow_mean) / self.flow_std
+
         return {
             'dynamic': torch.tensor(window_x_dynamic),
             'static': torch.tensor(self.x_static),
             'target': torch.tensor(target_y),
+            'target_raw': torch.tensor(target_raw_y),
             'basin_std': torch.tensor(self.flow_std, dtype=torch.float32),
+            'basin_mean': torch.tensor(self.flow_mean, dtype=torch.float32),
         }
 
 
@@ -198,23 +201,13 @@ def _load_basin_ids(basin_list_file, config, use_basin_splits, split_type='train
 
 def _build_basin_datasets(basin_ids, config, start_date, end_date):
     dyn_dir = config['processed_timeseries_dir'] # Points to the clean resampled data
-    static_file_path = config['static_attributes_file']
+    static_file_path = config['normalized_static_attributes_file']
     basin_datasets = []
 
-    # Load per-basin flow stds written by preprocess_dynamic_data.py
+    # Load per-basin flow mean/std (train years only) written by preprocess_dynamic_data.py
     stats_df = pd.read_csv(config['availability_report_file'])
     flow_std_map = dict(zip(stats_df['gauge_id'].astype(str), stats_df['flow_std']))
-
-    # Load per-feature mean/std for z-score normalizing static attributes, aligned to
-    # config['static_attributes'] order (must match SingleBasinDataset.static_feature_names)
-    feature_stats = pd.read_csv(config['feature_stats_file']).set_index('feature')
-    feature_stats = feature_stats.reindex(config['static_attributes'])
-    assert not feature_stats['mean'].isna().any(), \
-        f"Missing entries in {config['feature_stats_file']} for: " \
-        f"{feature_stats[feature_stats['mean'].isna()].index.tolist()}"
-    static_mean = feature_stats['mean'].values.astype(np.float32)
-    static_std = feature_stats['std'].values.astype(np.float32)
-    static_std = np.where(static_std < 1e-6, 1.0, static_std).astype(np.float32)
+    flow_mean_map = dict(zip(stats_df['gauge_id'].astype(str), stats_df['flow_mean']))
 
     for basin_id in basin_ids:
         # Dynamic files are stored as [gauge_id].csv based on preprocessing script
@@ -223,9 +216,10 @@ def _build_basin_datasets(basin_ids, config, start_date, end_date):
         # Safeguard verification: ensuring both dynamic sequence data and master static metrics exist
         if os.path.exists(dyn_path) and os.path.exists(static_file_path):
             flow_std = flow_std_map.get(basin_id, 1.0)
+            flow_mean = flow_mean_map.get(basin_id, 0.0)
             # Slice specific basin row inside SingleBasinDataset initialization
             basin_ds = SingleBasinDataset(dyn_path, static_file_path, config, start_date, end_date, flow_std,
-                                           static_mean=static_mean, static_std=static_std)
+                                           flow_mean=flow_mean)
             if len(basin_ds) > 0:
                 basin_datasets.append(basin_ds)
         else:
