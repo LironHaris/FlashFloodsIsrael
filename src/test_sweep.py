@@ -18,6 +18,7 @@ Usage:
 
 import os
 import sys
+import json
 import argparse
 import yaml
 import numpy as np
@@ -128,6 +129,16 @@ def build_run_label(rank, run, config, sweep_params):
     return "  ".join(parts)
 
 
+def save_nse_cache(nse_per_lead, output_dir, sweep_id):
+    """Dumps {lead: [(label, [nse_values]), ...]} to disk so plots can be
+    regenerated later without re-running model inference."""
+    cache_path = os.path.join(output_dir, f'nse_cache_{sweep_id}.json')
+    with open(cache_path, 'w', encoding='utf-8') as f:
+        json.dump({str(lead): runs for lead, runs in nse_per_lead.items()}, f)
+    print(f"  Saved NSE cache: {cache_path}")
+    return cache_path
+
+
 def plot_cdf_comparison(lead, run_nse_list, output_dir):
     """
     Draws overlaid NSE CDF curves for all runs on a single figure.
@@ -159,7 +170,8 @@ def plot_cdf_comparison(lead, run_nse_list, output_dir):
     ax.set_title(f'NSE Empirical CDF — Lead +{lead}h  (Top Sweep Models)',
                  fontsize=12, fontweight='bold', pad=15, color='#2c3e50')
     ax.set_xlabel('NSE', fontsize=10.5, labelpad=8)
-    ax.set_ylabel('Fraction of Basins', fontsize=10.5, labelpad=8)
+    ax.set_ylabel('CDF', fontsize=10.5, labelpad=8)
+    ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
     ax.grid(True, linestyle=':', alpha=0.5, color='#b0b0b0')
     ax.legend(loc='lower right', frameon=True, facecolor='#ffffff',
@@ -257,6 +269,8 @@ def main():
             for lead, median_val in medians.items():
                 if median_val is not None:
                     wandb.run.summary[f"run{rank}_median_nse_lead{lead}h"] = median_val
+
+    save_nse_cache(nse_per_lead, output_dir, args.sweep_id)
 
     print("[INFO] Generating CDF comparison plots ...")
     for lead in lead_times:
