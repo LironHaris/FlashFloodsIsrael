@@ -64,11 +64,6 @@ def apply_run_config(base_config, run):
     config = base_config.copy()
     # Skip private wandb keys (prefixed with _)
     config.update({k: v for k, v in run.config.items() if not k.startswith('_')})
-    # initial_lr (scalar) overrides epoch-0 entry in the milestone dict
-    if 'initial_lr' in config:
-        lr_schedule = dict(config['learning_rate'])
-        lr_schedule[0] = float(config['initial_lr'])
-        config['learning_rate'] = lr_schedule
     return config
 
 
@@ -117,16 +112,13 @@ def compute_nse_per_basin(basin, test_dataset, model, device, config):
 # ==============================================================================
 # 5. CDF comparison plot
 # ==============================================================================
-def build_run_label(rank, run, config, sweep_params):
-    val = run.summary.get('best_val_loss', float('nan'))
-    parts = [f"#{rank}"]
-    for param in sweep_params:
-        v = run.config.get(param, config.get(param, '?'))
-        if isinstance(v, float):
-            v = f"{v:.4g}"
-        parts.append(f"{param}={v}")
-    parts.append(f"val={val:.4f}")
-    return "  ".join(parts)
+def build_run_label(rank, run, config):
+    lr = run.config.get('learning_rate', config.get('learning_rate', '?'))
+    hidden = run.config.get('hidden_size', config.get('hidden_size', '?'))
+    batch = run.config.get('batch_size', config.get('batch_size', '?'))
+    if isinstance(lr, float):
+        lr = f"{lr:.4g}"
+    return f"#{rank}  lr={lr}  hidden={hidden}  batch={batch}"
 
 
 def save_nse_cache(nse_per_lead, output_dir, sweep_id):
@@ -224,8 +216,6 @@ def main():
     )
     os.makedirs(output_dir, exist_ok=True)
 
-    sweep_params = list(sweep_config.get('parameters', {}).keys())
-
     lead_times = base_config.get('forecast_lead_times', [0, 1, 2, 3])
     # {lead: [(label, [nse_values]), ...]}
     nse_per_lead = {lead: [] for lead in lead_times}
@@ -255,7 +245,7 @@ def main():
                 if lead in nse_by_lead:
                     nse_accumulator[lead].append(nse_by_lead[lead])
 
-        label = build_run_label(rank, run, config, sweep_params)
+        label = build_run_label(rank, run, config)
         for lead in lead_times:
             nse_per_lead[lead].append((label, nse_accumulator[lead]))
 

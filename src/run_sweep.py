@@ -25,12 +25,27 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from model import EALSTMModel
 from dataset import get_dataloader
-from train import set_seed, train_epoch, validate_epoch, get_loss_criterion, update_learning_rate, get_tracked_hparams
+from train import set_seed, train_epoch, validate_epoch, get_loss_criterion, get_tracked_hparams
 
 
 def load_config(yaml_path):
     with open(yaml_path, 'r', encoding='utf-8') as f:
         return yaml.safe_load(f)
+
+
+def is_below_top_k(project, sweep_id, current_run_id, best_val_loss_so_far, top_k):
+    """True if this run's best_val_loss isn't competitive with the top_k
+    best *finished* runs in the sweep so far. False if too few exist to compare."""
+    api = wandb.Api()
+    sweep = api.sweep(f"{project}/{sweep_id}")
+    finished_losses = sorted(
+        r.summary['best_val_loss']
+        for r in sweep.runs
+        if r.id != current_run_id and r.state == 'finished' and 'best_val_loss' in r.summary
+    )
+    if len(finished_losses) < top_k:
+        return False
+    return best_val_loss_so_far > finished_losses[top_k - 1]
 
 
 def run_trial():
@@ -41,17 +56,16 @@ def run_trial():
     if api_key:
         wandb.login(key=api_key)
 
-    wandb.init(project=sweep_config.get('project'))
+    project = sweep_config.get('project')
+    wandb.init(project=project)
+
+    early_drop_enabled = sweep_config.get('early_drop_enabled', False)
+    early_drop_top_k = sweep_config.get('early_drop_top_k')
+    early_drop_epoch = sweep_config.get('early_drop_epoch')
 
     # Load base config and apply swept hyperparameters
     config = base_config
     config.update(dict(wandb.config))
-
-    # initial_lr (scalar swept value) overrides the epoch-0 entry in the milestone dict
-    if 'initial_lr' in config:
-        lr_schedule = config['learning_rate']
-        lr_schedule[0] = float(config['initial_lr'])
-        config['learning_rate'] = lr_schedule
 
     # Push non-swept relevant hparams (epochs, forecast_lead_times, etc.) into the W&B run
     wandb.config.update(get_tracked_hparams(config))
@@ -75,9 +89,8 @@ def run_trial():
     loss_setting = config.get('loss', 'MSE')
     criterion = get_loss_criterion(loss_setting, config)
 
-    lr_schedule = config['learning_rate']
-    initial_lr = float(lr_schedule.get(0, 1e-3))
-    optimizer = optim.Adam(model.parameters(), lr=initial_lr)
+    sweep_lr = float(config['learning_rate'])
+    optimizer = optim.Adam(model.parameters(), lr=sweep_lr)
 
     best_val_loss = float('inf')
     epochs = config.get('epochs', 30)
@@ -85,8 +98,6 @@ def run_trial():
     epochs_no_improve = 0
 
     for epoch in range(epochs):
-        update_learning_rate(optimizer, epoch, lr_schedule)
-
         train_loss = train_epoch(model, train_loader, optimizer, criterion, device, config)
         val_loss = validate_epoch(model, val_loader, criterion, device, config)
 
@@ -111,6 +122,13 @@ def run_trial():
             epochs_no_improve += 1
             if patience is not None and epochs_no_improve >= patience:
                 print(f"[Early Stop] No val_loss improvement for {patience} epochs. Stopping at epoch {epoch + 1}.")
+                break
+
+        if early_drop_enabled and (epoch + 1) == early_drop_epoch:
+            if is_below_top_k(project, wandb.run.sweep_id, wandb.run.id, best_val_loss, early_drop_top_k):
+                print(f"[Early Drop] best_val_loss={best_val_loss:.4f} not in top {early_drop_top_k} "
+                      f"at epoch {epoch + 1}. Abandoning this configuration.")
+                wandb.run.summary['early_dropped'] = True
                 break
 
     wandb.finish()

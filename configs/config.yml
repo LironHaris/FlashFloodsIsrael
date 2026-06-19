@@ -23,14 +23,21 @@ validation_basin_file: data/basin_lists/israel_val.txt
 test_basin_file: data/basin_lists/israel_test.txt
 
 # training, validation and test time periods (format = 'YYYY-MM-DD HH:MM:SS') NOTE: nueral hydrology format = 'dd/mm/yyyy'
-train_start_date: '2008-10-01 08:00:00' # use only for nueral hydrology
-train_end_date: '2017-09-30 07:00:00'
+# training time periods: list of (possibly disjoint) [start, end] windows.
+# Leave a period's start_date empty to use each basin's own earliest available record.
+train_periods:
+  - start_date:
+    end_date: '2010-09-30 07:00:00'
+  - start_date: '2013-10-01 08:00:00'
+    end_date: '2016-09-30 07:00:00'
+  - start_date: '2019-10-01 08:00:00'
+    end_date: '2023-09-30 07:00:00'
 
-validation_start_date: '2017-10-01 08:00:00'
-validation_end_date: '2020-09-30 07:00:00'
+validation_start_date: '2010-10-01 08:00:00'
+validation_end_date: '2013-09-30 07:00:00'
 
-test_start_date: '2020-10-01 08:00:00'
-test_end_date: '2023-10-01 07:00:00'
+test_start_date: '2016-10-01 08:00:00'
+test_end_date: '2019-09-30 07:00:00'
 
 # if you want to use different (continuous or split) periods per basin (and period) define path to pickle files here.
 per_basin_train_periods_file:
@@ -172,17 +179,14 @@ nse_epsilon: 0.1
 regularization:
 #- tie_frequencies
 
-# specify learning rates to use starting at specific epochs (0 is the initial learning rate)
-learning_rate:
-    0: 1e-3
-    10: 5e-4
-    20: 1e-4
+# constant learning rate used for the entire training run
+learning_rate: 0.001
 
 # Mini-batch size
 batch_size: 256
 
 # Number of training epochs
-epochs: 30
+epochs: 20
 
 # adds noise with given std to the labels during training. Leave empty or set to 0 if not used.
 target_noise_std: 0
@@ -414,7 +418,7 @@ pca_variance_threshold: 0.95
 # --- Extreme Value Analysis (Return Periods) ------------------------------------------------------
 return_periods_years: [2, 5, 10]
 return_periods_output_dir: ./data/processed/return_periods
-hydro_year_start_month: 9 # September
+hydro_year_start_month: 10 # October
 min_years_for_gev: 5       # Minimum data points (years) required to fit GEV stably
 gev_plausibility_scalar: 10 # Warn if the theoretical value at the largest configured return period exceeds this multiple of the max observed annual maximum
 visual_buffer_days: 4

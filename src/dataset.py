@@ -19,23 +19,20 @@ class SingleBasinDataset(Dataset):
     """
     A PyTorch Dataset that handles the dynamic and static data for a SINGLE basin.
     """
-    def __init__(self, dynamic_path, static_path, config, start_date, end_date, flow_std: float = 1.0,
+    def __init__(self, dynamic_path, static_path, config, periods, flow_std: float = 1.0,
                  flow_mean: float = 0.0):
         # Extract basin ID dynamically from filename
         self.gauge_id = str(os.path.basename(dynamic_path).replace('.csv', ''))
-        
+
         # Load dynamic and static data
         dyn_df = pd.read_csv(dynamic_path)
         dyn_df['date'] = pd.to_datetime(dyn_df['date'])
         dyn_df.set_index('date', inplace=True)
         stat_df = pd.read_csv(static_path)
-        
-        # Filter the dynamic data according to the provided period
-        if start_date is None:
-            dyn_df = dyn_df[:end_date]
-        else:
-            dyn_df = dyn_df[start_date : end_date]
-            
+
+        # Filter the dynamic data to the union of the provided (possibly disjoint) periods
+        dyn_df = pd.concat([dyn_df[start_date:end_date] for start_date, end_date in periods])
+
         # Store index dates for evaluation alignment
         self.dates = dyn_df.index
         
@@ -115,13 +112,13 @@ class IsraelBasinsDataset(Dataset):
     """
     def __init__(self, split_type, config, use_basin_splits=True):
         # Step 1: Extract paths, time bounds, and shuffling rules
-        basin_list_file, start_date, end_date, _ = _get_split_bounds_and_config(split_type, config, use_basin_splits)
+        basin_list_file, periods, _ = _get_split_bounds_and_config(split_type, config, use_basin_splits)
 
         # Step 2: Load the target basin IDs
         basin_ids = _load_basin_ids(basin_list_file, config, use_basin_splits, split_type)
 
         # Step 3: Construct dataset objects for each individual basin
-        self.basin_datasets = _build_basin_datasets(basin_ids, config, start_date, end_date)
+        self.basin_datasets = _build_basin_datasets(basin_ids, config, periods)
         
         # Step 4: Combine using PyTorch ConcatDataset
         self.concat_dataset = ConcatDataset(self.basin_datasets)
@@ -150,37 +147,24 @@ class IsraelBasinsDataset(Dataset):
 # 3. Private Helper Sub-Functions
 # ==============================================================================
 def _get_split_bounds_and_config(split_type, config, use_basin_splits):
-    buffer_hours = config['seq_length'] 
+    buffer_hours = config['seq_length']
 
-    if use_basin_splits:
-        if split_type == 'train':
-            return config['train_basin_file'], config.get('train_start_date'), config['train_end_date'], True
-            
-        elif split_type in ['val', 'test']:
-            prefix = 'validation' if split_type == 'val' else 'test'
-            basin_list_file = config[f'{prefix}_basin_file']
-            
-            raw_start = pd.to_datetime(config[f'{prefix}_start_date'])
-            start_date = (raw_start - pd.Timedelta(hours=buffer_hours)).strftime('%Y-%m-%d %H:%M:%S')
-            end_date = config[f'{prefix}_end_date']
-            
-            return basin_list_file, start_date, end_date, False
-    else:
-        # Strict temporal split: ignore val/test basin files, use master list or fallback directory scan
+    if split_type == 'train':
+        periods = [(p.get('start_date'), p['end_date']) for p in config['train_periods']]
         basin_list_file = config['train_basin_file']
-        
-        if split_type == 'train':
-            return basin_list_file, config.get('train_start_date'), config['train_end_date'], True
-            
-        elif split_type in ['val', 'test']:
-            prefix = 'validation' if split_type == 'val' else 'test'
-            
-            raw_start = pd.to_datetime(config[f'{prefix}_start_date'])
-            start_date = (raw_start - pd.Timedelta(hours=buffer_hours)).strftime('%Y-%m-%d %H:%M:%S')
-            end_date = config[f'{prefix}_end_date']
-            
-            return basin_list_file, start_date, end_date, False
-            
+        return basin_list_file, periods, True
+
+    elif split_type in ['val', 'test']:
+        prefix = 'validation' if split_type == 'val' else 'test'
+        # When basin splits are disabled, fall back to the train basin list (master list / directory scan)
+        basin_list_file = config[f'{prefix}_basin_file'] if use_basin_splits else config['train_basin_file']
+
+        raw_start = pd.to_datetime(config[f'{prefix}_start_date'])
+        start_date = (raw_start - pd.Timedelta(hours=buffer_hours)).strftime('%Y-%m-%d %H:%M:%S')
+        end_date = config[f'{prefix}_end_date']
+
+        return basin_list_file, [(start_date, end_date)], False
+
     raise ValueError("split_type must be either 'train', 'val', or 'test'")
 
 
@@ -199,7 +183,7 @@ def _load_basin_ids(basin_list_file, config, use_basin_splits, split_type='train
         return [line.strip() for line in f if line.strip()]
 
 
-def _build_basin_datasets(basin_ids, config, start_date, end_date):
+def _build_basin_datasets(basin_ids, config, periods):
     dyn_dir = config['processed_timeseries_dir'] # Points to the clean resampled data
     static_file_path = config['normalized_static_attributes_file']
     basin_datasets = []
@@ -218,7 +202,7 @@ def _build_basin_datasets(basin_ids, config, start_date, end_date):
             flow_std = flow_std_map.get(basin_id, 1.0)
             flow_mean = flow_mean_map.get(basin_id, 0.0)
             # Slice specific basin row inside SingleBasinDataset initialization
-            basin_ds = SingleBasinDataset(dyn_path, static_file_path, config, start_date, end_date, flow_std,
+            basin_ds = SingleBasinDataset(dyn_path, static_file_path, config, periods, flow_std,
                                            flow_mean=flow_mean)
             if len(basin_ds) > 0:
                 basin_datasets.append(basin_ds)
@@ -250,7 +234,7 @@ def get_dataloader(split_type, config, use_basin_splits=True):
     # Instantiate the wrapper dataset
     israel_dataset = IsraelBasinsDataset(split_type, config, use_basin_splits=use_basin_splits)
     
-    _, _, _, is_shuffle = _get_split_bounds_and_config(split_type, config, use_basin_splits)
+    _, _, is_shuffle = _get_split_bounds_and_config(split_type, config, use_basin_splits)
     
     loader = DataLoader(
         israel_dataset, 

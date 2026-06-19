@@ -28,7 +28,7 @@ def get_tracked_hparams(config):
     """Return the subset of config keys that genuinely affect model behavior."""
     keys = [
         'hidden_size', 'output_dropout', 'initial_forget_bias',
-        'loss', 'nse_epsilon', 'learning_rate', 'initial_lr',
+        'loss', 'nse_epsilon', 'learning_rate',
         'batch_size', 'epochs', 'seed',
         'target_noise_std', 'clip_gradient_norm',
         'seq_length', 'forecast_lead_times', 'use_basin_splits',
@@ -46,20 +46,6 @@ def set_seed(seed):
         torch.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
         np.random.seed(seed)
-
-
-def update_learning_rate(optimizer, epoch, lr_schedule):
-    """
-    Scans the configuration schedule and updates the optimizer learning rate 
-    if the current epoch matches a milestone boundary.
-    """
-    milestones = {int(k): float(v) for k, v in lr_schedule.items()}
-    
-    if epoch in milestones:
-        new_lr = milestones[epoch]
-        for param_group in optimizer.param_groups:
-            param_group['lr'] = new_lr
-        print(f"\n[INFO] Learning rate updated to {new_lr} for Epoch {epoch}.")
 
 
 def train_epoch(model, dataloader, optimizer, criterion, device, config):
@@ -218,8 +204,7 @@ def main():
     criterion = get_loss_criterion(loss_setting, config)
     print(f"[INFO] Optimization criterion set to: {loss_setting}")
     
-    lr_schedule = config['learning_rate']
-    initial_lr = float(lr_schedule.get(0, 1e-3))
+    initial_lr = float(config['learning_rate'])
     optimizer = optim.Adam(model.parameters(), lr=initial_lr)
     
     run_dir = config.get('run_dir', './runs/')
@@ -247,8 +232,6 @@ def main():
     print(f"[INFO] Initiating optimization loop for {epochs} epochs.\n")
     
     for epoch in range(epochs):
-        update_learning_rate(optimizer, epoch, lr_schedule)
-        
         # Part A: Execute Training Cycle
         train_loss = train_epoch(model, train_loader, optimizer, criterion, device, config)
         

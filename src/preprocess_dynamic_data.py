@@ -134,8 +134,13 @@ def process_dynamic_data(config):
     Orchestrates the data pipeline using modular helper functions.
     All paths and parameters are drawn directly from the config.
     """
-    # Extract global end date boundary
-    END_DATE = config['test_end_date']
+    # Extract global end date boundary: the latest end date across all configured
+    # train/validation/test periods, since train periods can now extend past test.
+    all_end_dates = (
+        [p['end_date'] for p in config['train_periods']]
+        + [config['validation_end_date'], config['test_end_date']]
+    )
+    END_DATE = max(pd.to_datetime(d) for d in all_end_dates)
     
     # Extract all paths from the configuration
     input_dir = config['raw_dynamic_dir']
@@ -172,12 +177,14 @@ def process_dynamic_data(config):
         # Step 5: Remove NaN stretches longer than seq_length (untrainable dead weight)
         clean_df, n_dropped = drop_long_flow_nan_stretches(clean_df, seq_length=config['seq_length'])
 
-        # Compute per-basin flow mean/std from the training period only (np.nanmean/nanstd ignore
+        # Compute per-basin flow mean/std from the training periods only (np.nanmean/nanstd ignore
         # NaN entries). These are fixed per-basin normalization constants used to z-score the flow
         # target in dataset.py, so they must reflect train-period variability, not the full
         # train+val+test series. Both are drawn from the same slice/fallback branch so they always
         # describe the same underlying sample.
-        train_slice = clean_df.loc[config.get('train_start_date'):config['train_end_date']]
+        train_slice = pd.concat([
+            clean_df.loc[p.get('start_date'):p['end_date']] for p in config['train_periods']
+        ])
         flow_mean = float(np.nanmean(train_slice['Flow_m3_sec'].values))
         flow_std = float(np.nanstd(train_slice['Flow_m3_sec'].values))
         if not np.isfinite(flow_std) or flow_std == 0.0:
