@@ -4,10 +4,13 @@ method: bayes
 metric:
   goal: minimize
   name: val_loss
-early_drop_enabled: true
-early_drop_top_k: 3
-early_drop_epoch: 5
 parameters:
+  early_drop_enabled: 
+    value: true
+  early_drop_top_k:
+    value: 3
+  early_drop_epoch: 
+    value: 5
   hidden_size:
     values: [32, 64, 128, 256]
   learning_rate:
