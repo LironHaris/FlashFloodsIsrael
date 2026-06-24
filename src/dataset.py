@@ -11,10 +11,6 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset, ConcatDataset, DataLoader
 
-
-# ==============================================================================
-# 1. Single Basin Dataset Class
-# ==============================================================================
 class SingleBasinDataset(Dataset):
     """
     A PyTorch Dataset that handles the dynamic and static data for a SINGLE basin.
@@ -101,10 +97,6 @@ class SingleBasinDataset(Dataset):
             'basin_mean': torch.tensor(self.flow_mean, dtype=torch.float32),
         }
 
-
-# ==============================================================================
-# 2. Main Wrapper Dataset for Multiple Basins (IsraelBasinsDataset)
-# ==============================================================================
 class IsraelBasinsDataset(Dataset):
     """
     Wrapper dataset that concatenates multiple individual SingleBasinDatasets 
@@ -143,9 +135,6 @@ class IsraelBasinsDataset(Dataset):
         return self.concat_dataset[idx]
 
 
-# ==============================================================================
-# 3. Private Helper Sub-Functions
-# ==============================================================================
 def _get_split_bounds_and_config(split_type, config, use_basin_splits):
     buffer_hours = config['seq_length']
 
@@ -213,10 +202,6 @@ def _build_basin_datasets(basin_ids, config, periods):
         raise RuntimeError("No valid basin datasets were generated from the provided split list.")
     return basin_datasets
 
-
-# ==============================================================================
-# 4. Main Loader Builder Function
-# ==============================================================================
 def _resolve_num_workers(config):
     if config.get('num_workers', -1) != -1:
         return config['num_workers']

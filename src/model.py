@@ -27,9 +27,6 @@ Efficiency & Optimization Decisions:
 import torch
 import torch.nn as nn
 
-# ==============================================================================
-# 1. EA-LSTM Cell Implementation
-# ==============================================================================
 class EALSTMCell(nn.Module):
     """
     Entity-Aware LSTM cell. Uses a constant, externally provided static input gate
@@ -80,9 +77,6 @@ class EALSTMCell(nn.Module):
         return hidden_state_new, cell_state_new
 
 
-# ==============================================================================
-# 2. Main Model Wrapper Class
-# ==============================================================================
 class EALSTMModel(nn.Module):
     """
     Full EA-LSTM network wrapper managing the time-loop execution and multi-horizon prediction head.

@@ -42,10 +42,6 @@ def load_config(path):
     with open(path, 'r', encoding='utf-8') as f:
         return yaml.safe_load(f)
 
-
-# ==============================================================================
-# 1. W&B API — Fetch top runs
-# ==============================================================================
 def fetch_top_runs(project, sweep_id, n):
     """Return the top N runs from a sweep ranked by ascending best_val_loss."""
     api = wandb.Api()
@@ -55,10 +51,6 @@ def fetch_top_runs(project, sweep_id, n):
         raise RuntimeError("No completed runs with 'best_val_loss' found in this sweep.")
     return sorted(valid, key=lambda r: r.summary['best_val_loss'])[:n]
 
-
-# ==============================================================================
-# 2. Config reconstruction
-# ==============================================================================
 def apply_run_config(base_config, run):
     """Overlay the sweep run's hyperparameters onto the base config."""
     config = base_config.copy()
@@ -66,10 +58,6 @@ def apply_run_config(base_config, run):
     config.update({k: v for k, v in run.config.items() if not k.startswith('_')})
     return config
 
-
-# ==============================================================================
-# 3. Model loading
-# ==============================================================================
 def load_model(config, run_id, device):
     run_dir = config.get('run_dir', './runs/')
     ckpt_path = os.path.join(run_dir, config['experiment_name'], run_id, 'best_model.pt')
@@ -81,10 +69,6 @@ def load_model(config, run_id, device):
     model.eval()
     return model
 
-
-# ==============================================================================
-# 4. Per-basin NSE computation
-# ==============================================================================
 def compute_nse_per_basin(basin, test_dataset, model, device, config):
     """
     Runs inference for one basin and returns a {lead: nse} dict.
@@ -108,10 +92,6 @@ def compute_nse_per_basin(basin, test_dataset, model, device, config):
         nse_by_lead[lead] = 1.0 - ss_res / ss_tot
     return nse_by_lead if nse_by_lead else None
 
-
-# ==============================================================================
-# 5. CDF comparison plot
-# ==============================================================================
 def build_run_label(rank, run, config):
     lr = run.config.get('learning_rate', config.get('learning_rate', '?'))
     hidden = run.config.get('hidden_size', config.get('hidden_size', '?'))
@@ -175,10 +155,6 @@ def plot_cdf_comparison(lead, run_nse_list, output_dir):
     print(f"  Saved: {out_path}")
     return fig
 
-
-# ==============================================================================
-# 6. Main
-# ==============================================================================
 def main():
     parser = argparse.ArgumentParser(
         description='Evaluate top W&B sweep runs on the test set and plot NSE CDFs.'
