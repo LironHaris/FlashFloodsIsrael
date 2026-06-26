@@ -61,18 +61,27 @@ def setup_evaluation(config):
 
 def load_basin_return_periods(basin_id, config):
     """
-    Loads historical GEV return period thresholds computed during preprocessing.
-    Maps return period years to their physical streamflow value (m3/sec).
+    Loads cross-checked return period thresholds from the combined return-period file
+    (see new_return_periods.py). Maps return period years to their physical streamflow
+    value (m3/sec). Skips RP columns with no usable value (missing row/column, NaN, or
+    a non-positive sentinel like the -2 "no data" marker).
     """
-    eva_dir = config.get('return_periods_output_dir', 'data/processed/return_periods')
-    gev_path = os.path.join(eva_dir, str(basin_id), 'Hourly_Flow_theoretical_GEV.csv')
-    
-    if not os.path.exists(gev_path):
+    combined_path = config['hourly_flow_return_periods_combined']
+    if not os.path.exists(combined_path):
         return {}
-        
-    # Read GEV file and convert to dictionary mapping {RP_Year: Flow_Value}
-    gev_df = pd.read_csv(gev_path)
-    return dict(zip(gev_df['Return_Period_Years'], gev_df['Theoretical_Value']))
+
+    combined_df = pd.read_csv(combined_path, dtype={'basin_id': str})
+    row = combined_df[combined_df['basin_id'] == str(basin_id)]
+    if row.empty:
+        return {}
+    row = row.iloc[0]
+
+    thresholds = {}
+    for rp_year in config.get('return_periods_years', [2, 5]):
+        col = f'RP{rp_year}'
+        if col in row.index and pd.notna(row[col]) and row[col] > 0:
+            thresholds[rp_year] = float(row[col])
+    return thresholds
 
 
 def calculate_threshold_metrics(predictions_np, actuals_np, threshold_value):

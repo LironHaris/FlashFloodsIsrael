@@ -418,7 +418,7 @@ pca_variance_threshold: 0.95
 # --- Extreme Value Analysis (Return Periods) ------------------------------------------------------
 return_periods_years: [2, 5]
 return_periods_output_dir: ./data/processed/return_periods
-hourly_flow_return_periods_combined : /data/processed/return_periods/new_return_periods.csv
+hourly_flow_return_periods_combined : ./data/processed/return_periods/new_return_periods.csv
 hydro_year_start_month: 10 # October
 min_years_for_gev: 5       # Minimum data points (years) required to fit GEV stably
 gev_plausibility_scalar: 10 # Warn if the theoretical value at the largest configured return period exceeds this multiple of the max observed annual maximum

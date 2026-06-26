@@ -17,23 +17,29 @@ def load_config(yaml_path):
 
 
 def load_basin_threshold(basin_id, target_rp, config):
-    """Loads the specific GEV streamflow threshold for a given return period."""
-    eva_dir = config.get('return_periods_output_dir', 'data/processed/return_periods')
-    gev_path = os.path.join(eva_dir, str(basin_id), 'Hourly_Flow_theoretical_GEV.csv')
-    
-    if not os.path.exists(gev_path):
-        print(f"  [Warning] GEV stats missing for basin {basin_id}. Cannot evaluate thresholds.")
+    """Loads the cross-checked streamflow threshold for a given return period from
+    the combined return-period file (see new_return_periods.py)."""
+    combined_path = config['hourly_flow_return_periods_combined']
+    if not os.path.exists(combined_path):
+        print(f"  [Warning] Combined return-period file missing at {combined_path}.")
         return None
-        
-    gev_df = pd.read_csv(gev_path)
-    row = gev_df[gev_df['Return_Period_Years'] == target_rp]
-    
+
+    combined_df = pd.read_csv(combined_path, dtype={'basin_id': str})
+    col = f'RP{target_rp}'
+    if col not in combined_df.columns:
+        available_rps = [c[2:] for c in combined_df.columns if c.startswith('RP')]
+        print(f"  [Warning] Return Period {target_rp}yr not available in combined file. Available: {available_rps}")
+        return None
+
+    row = combined_df[combined_df['basin_id'] == str(basin_id)]
     if row.empty:
-        available_rps = gev_df['Return_Period_Years'].tolist()
-        print(f"  [Warning] Return Period {target_rp}yr not found for basin {basin_id}. Available: {available_rps}")
+        print(f"  [Warning] Basin {basin_id} not found in combined return-period file.")
         return None
-        
-    return float(row['Theoretical_Value'].values[0])
+
+    value = row.iloc[0][col]
+    if pd.isna(value) or value <= 0:
+        return None
+    return float(value)
 
 
 def scan_for_events(basin_id, target_rp, buffer_days, config):

@@ -50,18 +50,18 @@ def resolve_rp_value(official_value, comparison_value):
     """
     Pass through official_value unless it's missing or >10x off from comparison_value
     (either direction), in which case fall back to comparison_value itself. If no
-    comparison_value is available, official_value is the only thing there is to return.
+    comparison_value is available - including a comparison_value of 0, which just means
+    the closest qualifying hydrological year happened to be dry and isn't a meaningful
+    flow magnitude to validate against - official_value is the only thing there is to return.
     """
-    if comparison_value is None or pd.isna(comparison_value):
+    if comparison_value is None or pd.isna(comparison_value) or comparison_value == 0:
         return official_value
 
     if pd.isna(official_value):
         return comparison_value
 
-    if official_value == 0 or comparison_value == 0:
-        # one zero and one non-zero is an effectively infinite ratio -> fill;
-        # both zero is trivially consistent -> keep official
-        return official_value if official_value == comparison_value else comparison_value
+    if official_value == 0:
+        return comparison_value
 
     ratio = max(official_value, comparison_value) / min(official_value, comparison_value)
     return comparison_value if ratio > 10 else official_value
@@ -94,7 +94,9 @@ def main(config):
             result = {'basin_id': basin_id}
             for col, target_years in targets.items():
                 comparison_value = get_comparison_value(basin_dir, target_years)
-                result[col] = comparison_value if comparison_value is not None else -2
+                # A comparison_value of 0 means the closest qualifying year was dry -
+                # not a usable fallback, so treat it the same as "no data".
+                result[col] = comparison_value if comparison_value else -2
             rows.append(result)
             continue
 
