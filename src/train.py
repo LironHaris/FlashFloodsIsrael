@@ -206,7 +206,20 @@ def main():
     
     initial_lr = float(config['learning_rate'])
     optimizer = optim.Adam(model.parameters(), lr=initial_lr)
-    
+
+    # Resume from a checkpoint if one is configured (model + optimizer state both restored)
+    start_epoch = 0
+    checkpoint_path = config.get('checkpoint_path')
+    if checkpoint_path:
+        if not os.path.exists(checkpoint_path):
+            raise FileNotFoundError(f"checkpoint_path is set but not found: {checkpoint_path}")
+        print(f"[INFO] Resuming from checkpoint: {checkpoint_path}")
+        checkpoint = torch.load(checkpoint_path, map_location=device)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        start_epoch = checkpoint.get('epoch', 0)
+        print(f"[INFO] Resumed after epoch {start_epoch}. Re-validating to establish best_val_loss baseline...")
+
     run_dir = config.get('run_dir', './runs/')
     exp_dir = os.path.join(run_dir, config['experiment_name'])
     os.makedirs(exp_dir, exist_ok=True)
@@ -223,15 +236,18 @@ def main():
         )
 
     # Trackers for saving checkpoints and plotting history
-    best_val_loss = float('inf')
+    best_val_loss = validate_epoch(model, val_loader, criterion, device, config) if start_epoch > 0 else float('inf')
     train_loss_history = []
     val_loss_history = []
 
     # Step 4: Core Training and Validation Loop Execution
     epochs = config.get('epochs', 30)
-    print(f"[INFO] Initiating optimization loop for {epochs} epochs.\n")
-    
-    for epoch in range(epochs):
+    if start_epoch >= epochs:
+        print(f"[INFO] Checkpoint already at epoch {start_epoch} >= target epochs {epochs}. Nothing to train.")
+    else:
+        print(f"[INFO] Initiating optimization loop for epochs {start_epoch + 1}-{epochs}.\n")
+
+    for epoch in range(start_epoch, epochs):
         # Part A: Execute Training Cycle
         train_loss = train_epoch(model, train_loader, optimizer, criterion, device, config)
         

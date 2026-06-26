@@ -6,7 +6,7 @@
 
 
 # experiment name, used as folder name
-experiment_name: model_0_train_2
+experiment_name: model_0_train_3
 
 # --- Weights & Biases ---
 use_wandb: true
@@ -77,7 +77,7 @@ metrics:
 model: ealstm
 
 # path to weight file that should be used as initial weights. Leave empty to start from random weights
-checkpoint_path:
+checkpoint_path: ./runs/model_0_train_2_eval_wcsd5zt3/best_model.pt 
 
 # prediction head [regression]. Define the head specific parameters below
 head: regression
@@ -157,7 +157,7 @@ transformer_nheads: 4
 # ----> General settings <----
 
 # Number of cell states of the LSTM
-hidden_size: 64
+hidden_size: 32
 
 # Initial bias value of the forget gate
 initial_forget_bias: 3
@@ -180,19 +180,19 @@ regularization:
 #- tie_frequencies
 
 # constant learning rate used for the entire training run
-learning_rate: 0.001
+learning_rate: 0.00033630495148045725 #0.001
 
 # Mini-batch size
 batch_size: 256
 
 # Number of training epochs
-epochs: 20
+epochs: 50 #20
 
 # adds noise with given std to the labels during training. Leave empty or set to 0 if not used.
 target_noise_std: 0
 
 # If a value, clips the gradients during training to that norm.
-clip_gradient_norm: 1
+clip_gradient_norm: 0.5 #1
 
 # Defines the time step frequencies to use (daily, hourly, ...). If used, predict_last_n and seq_length must be dicts.
 # Use pandas frequency strings to define frequencies. Note: the strings need to include values, e.g. '1D' instead of 'D'
@@ -434,3 +434,6 @@ plot_hydrographs:
   basin_id: "il_04"
   start_time: "2022-01-16 04:00:00"
   end_time: "2022-01-16 16:00:00"
+
+# --- Regularization settings ---
+weight_decay :
