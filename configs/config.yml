@@ -6,7 +6,7 @@
 
 
 # experiment name, used as folder name
-experiment_name: model_0_train_3
+experiment_name: model_0_test_3
 
 # --- Weights & Biases ---
 use_wandb: true
