@@ -107,7 +107,6 @@ def calculate_threshold_metrics(predictions_np, actuals_np, threshold_value):
 
     return count_string, hit_rate_score, false_alarms
 
-
 def evaluate_basin_sequences(basin, test_dataset, model, device, config):
     """
     Runs blinded sequential forward passes over a single targeted basin.

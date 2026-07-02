@@ -95,12 +95,30 @@ def impute_missing_rain(aligned_df):
     Flow data is left as NaN to avoid training on artificial discharge data.
     """
     clean_df = aligned_df.copy()
-    # FIXED: Changed from 'mean_rain' to 'hourly_precipitation' to match the pipeline
     clean_df['hourly_precipitation'] = clean_df['hourly_precipitation'].fillna(0)
     return clean_df
 
 # --------------------------------------------------------------------------------
-# 5. Long NaN Stretch Removal Function
+# 5. Cumulative Rain Feature Function
+# --------------------------------------------------------------------------------
+def add_cumulative_rain_features(df, windows):
+    """
+    Add trailing rolling-sum cumulative rain columns to an hourly-resolution
+    dataframe that already contains 'hourly_precipitation' (imputed, no NaN gaps).
+    Uses min_periods=1 so the first (hours - 1) rows of a basin record get a
+    partial-window sum rather than NaN.
+    """
+    result = df.copy()
+    for w in windows:
+        result[w['name']] = (
+            result['hourly_precipitation']
+            .rolling(window=w['hours'], min_periods=1)
+            .sum()
+        )
+    return result
+
+# --------------------------------------------------------------------------------
+# 6. Long NaN Stretch Removal Function
 # --------------------------------------------------------------------------------
 def drop_long_flow_nan_stretches(df, seq_length):
     """
@@ -174,6 +192,11 @@ def process_dynamic_data(config):
         # Step 4: Impute missing rain values with 0
         clean_df = impute_missing_rain(aligned_df)
 
+        # Step 4b: Add long-window cumulative (trailing rolling-sum) rain features.
+        # Must run after imputation (so gaps do not poison rolling sums) and before
+        # drop_long_flow_nan_stretches (so rolling sees a fully contiguous hourly index).
+        clean_df = add_cumulative_rain_features(clean_df, config['cumulative_rain_windows'])
+
         # Step 5: Remove NaN stretches longer than seq_length (untrainable dead weight)
         clean_df, n_dropped = drop_long_flow_nan_stretches(clean_df, seq_length=config['seq_length'])
 
@@ -191,17 +214,24 @@ def process_dynamic_data(config):
             flow_mean = float(np.nanmean(clean_df['Flow_m3_sec'].values))
             flow_std = float(np.nanstd(clean_df['Flow_m3_sec'].values))
 
-        # Compute per-basin rain mean/std from the same training-period slice. Unlike flow,
-        # rain has no downstream use for the raw values, so the z-score is baked directly into
-        # the saved series below rather than applied on-the-fly in dataset.py.
-        rain_mean = float(np.nanmean(train_slice['hourly_precipitation'].values))
-        rain_std = float(np.nanstd(train_slice['hourly_precipitation'].values))
-        if not np.isfinite(rain_std) or rain_std == 0.0:
-            rain_mean = float(np.nanmean(clean_df['hourly_precipitation'].values))
-            rain_std = float(np.nanstd(clean_df['hourly_precipitation'].values))
+        # Compute per-basin mean/std for hourly_precipitation and every configured
+        # cumulative-rain feature, each from the same training-period slice. Unlike flow,
+        # these features have no downstream use for raw values, so the z-score is baked
+        # directly into the saved series below rather than applied on-the-fly in dataset.py.
+        rain_feature_names = ['hourly_precipitation'] + [w['name'] for w in config['cumulative_rain_windows']]
+        rain_norm_stats = {}
+        for feature_name in rain_feature_names:
+            feature_mean = float(np.nanmean(train_slice[feature_name].values))
+            feature_std = float(np.nanstd(train_slice[feature_name].values))
+            if not np.isfinite(feature_std) or feature_std == 0.0:
+                feature_mean = float(np.nanmean(clean_df[feature_name].values))
+                feature_std = float(np.nanstd(clean_df[feature_name].values))
 
-        # Bake the rain normalization into the series that gets saved to disk
-        clean_df['hourly_precipitation'] = (clean_df['hourly_precipitation'] - rain_mean) / rain_std
+            # Bake the normalization into the series that gets saved to disk
+            clean_df[feature_name] = (clean_df[feature_name] - feature_mean) / feature_std
+
+            rain_norm_stats[f'{feature_name}_mean'] = feature_mean
+            rain_norm_stats[f'{feature_name}_std'] = feature_std
 
         # Record data for the summary report
         availability_records.append({
@@ -209,8 +239,7 @@ def process_dynamic_data(config):
             'availability_pct': flow_available,
             'flow_mean': flow_mean,
             'flow_std': flow_std,
-            'rain_mean': rain_mean,
-            'rain_std': rain_std,
+            **rain_norm_stats,
         })
 
         # Save the processed CSV file

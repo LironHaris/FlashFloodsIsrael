@@ -6,7 +6,7 @@
 
 
 # experiment name, used as folder name
-experiment_name: model_0_test_3
+experiment_name: model_1_train_1
 
 # --- Weights & Biases ---
 use_wandb: true
@@ -77,7 +77,7 @@ metrics:
 model: ealstm
 
 # path to weight file that should be used as initial weights. Leave empty to start from random weights
-checkpoint_path: ./runs/model_0_train_2_eval_wcsd5zt3/best_model.pt 
+checkpoint_path:
 
 # prediction head [regression]. Define the head specific parameters below
 head: regression
@@ -186,7 +186,7 @@ learning_rate: 0.00033630495148045725 #0.001
 batch_size: 256
 
 # Number of training epochs
-epochs: 50 #20
+epochs: 20 #20
 
 # adds noise with given std to the labels during training. Leave empty or set to 0 if not used.
 target_noise_std: 0
@@ -252,6 +252,18 @@ raw_dynamic_dir: ./data/raw/dynamic
 processed_timeseries_dir: ./data/processed/timeseries
 availability_report_file: ./data/processed/data_availability_report.csv
 
+# Long-window cumulative (trailing rolling-sum) rain features computed per basin
+# during preprocess_dynamic_data.py. Each entry becomes one new hourly-resolution
+# column: value[t] = sum(hourly_precipitation[t-hours+1 : t+1]), with partial sums
+# (min_periods=1) near a basin's start of record instead of NaN. Add/remove entries
+# freely; the pipeline loops over this list and is not hardcoded to any count.
+# NOTE: keep 'name' values in sync with dynamic_inputs below - not auto-enforced.
+cumulative_rain_windows:
+  - name: rain_cum_1week
+    hours: 168
+  - name: rain_cum_2week
+    hours: 336
+
 generic_data_config:
   time_series_path: processed/timeseries/
 
@@ -276,6 +288,8 @@ forcings: maurer_extended
 #     - total_precipitation_nldas_hourly
 dynamic_inputs:
 - hourly_precipitation
+- rain_cum_1week
+- rain_cum_2week
 
 # which columns to use as target
 target_variables:
