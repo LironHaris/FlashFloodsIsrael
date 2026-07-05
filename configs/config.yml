@@ -254,14 +254,22 @@ availability_report_file: ./data/processed/data_availability_report.csv
 
 # Long-window cumulative (trailing rolling-sum) rain features computed per basin
 # during preprocess_dynamic_data.py. Each entry becomes one new hourly-resolution
-# column: value[t] = sum(hourly_precipitation[t-hours+1 : t+1]), with partial sums
-# (min_periods=1) near a basin's start of record instead of NaN. Add/remove entries
-# freely; the pipeline loops over this list and is not hardcoded to any count.
+# column: value[t] = sum(hourly_precipitation[t-hours+1 : t+1]). The full window must
+# be NaN-free to produce a value (min_periods=hours) - any missing hour inside the
+# window, including insufficient history at a basin's start of record, yields NaN so
+# that window is excluded downstream rather than fabricating a partial sum. Add/remove
+# entries freely; the pipeline loops over this list and is not hardcoded to any count.
 # NOTE: keep 'name' values in sync with dynamic_inputs below - not auto-enforced.
 cumulative_rain_windows:
   - name: rain_cum_1week
     hours: 168
-  
+
+# Minimum % of hours (from basin_start_date through END_DATE) where BOTH Flow_m3_sec
+# and hourly_precipitation are non-NaN, required for a basin to be used at all. Basins
+# below this are excluded from training/val/test entirely (no processed CSV is written),
+# though they still get a flagged row in the availability report for auditing.
+min_combined_availability_pct: 50
+
 generic_data_config:
   time_series_path: processed/timeseries/
 

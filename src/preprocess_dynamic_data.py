@@ -20,17 +20,16 @@ Pipeline Architecture & Functional Stages:
    This maximizes historical training data per individual basin.
 
 3. Quantitative Quality Analysis:
-   Evaluates gauge reporting reliability by computing the percentage of valid, non-NaN flow 
-   observations. Crucially, this operation runs on the aligned dataset BEFORE any data filling 
-   takes place. This prevents down-stream artificial inflation of reporting health scores.
+   Evaluates gauge reporting reliability by computing the percentage of valid, non-NaN flow
+   observations, and the percentage of hours with BOTH flow and rain simultaneously available.
+   Basins below a configured combined-availability threshold are excluded entirely rather than
+   processed further (see min_combined_availability_pct in config).
 
-4. Domain-Specific Imputation:
-   Applies a physics-informed approach to missing data reconstruction:
-   - Precipitation ('hourly_precipitation'): Missing values are imputed with 0.0. This assumes no 
-     unrecorded meteorological forcing events took place during transmission drops.
-   - Streamflow ('Flow_m3_sec'): Left explicitly as NaN. Imputing artificial river discharge 
-     values would severely compromise the learning capabilities of the neural model and induce 
-     false physical behaviors.
+4. No Fabrication Policy:
+   Neither precipitation ('hourly_precipitation') nor streamflow ('Flow_m3_sec') gaps are
+   imputed - both are left explicitly as NaN. Inventing values for either would compromise the
+   learning capabilities of the neural model and induce false physical behaviors. Any training
+   window touching a NaN in either is excluded downstream by dataset.py's validity check.
 """
 
 import os
@@ -76,49 +75,50 @@ def align_to_timeline(resampled_df, start_date, end_date):
     return aligned_df
 
 # --------------------------------------------------------------------------------
-# 3. Quality Analysis Function
+# 3. Quality Analysis Functions
 # --------------------------------------------------------------------------------
 def analyze_data_quality(aligned_df):
     """
     Calculate the percentage of available (non-NaN) flow data.
-    Runs on the aligned data BEFORE imputation to maintain accuracy.
     """
     flow_available_pct = aligned_df['Flow_m3_sec'].notna().mean() * 100
     return flow_available_pct
 
-# --------------------------------------------------------------------------------
-# 4. Imputation and Cleaning Function
-# --------------------------------------------------------------------------------
-def impute_missing_rain(aligned_df):
+def analyze_combined_availability(aligned_df):
     """
-    Fill missing precipitation values with 0. 
-    Flow data is left as NaN to avoid training on artificial discharge data.
+    Calculate the percentage of hours where both Flow_m3_sec and
+    hourly_precipitation are simultaneously non-NaN. Used to decide whether a
+    basin has enough real (non-fabricated) data to be worth training on at all.
     """
-    clean_df = aligned_df.copy()
-    clean_df['hourly_precipitation'] = clean_df['hourly_precipitation'].fillna(0)
-    return clean_df
+    combined_available_pct = (
+        aligned_df['Flow_m3_sec'].notna() & aligned_df['hourly_precipitation'].notna()
+    ).mean() * 100
+    return combined_available_pct
 
 # --------------------------------------------------------------------------------
-# 5. Cumulative Rain Feature Function
+# 4. Cumulative Rain Feature Function
 # --------------------------------------------------------------------------------
 def add_cumulative_rain_features(df, windows):
     """
     Add trailing rolling-sum cumulative rain columns to an hourly-resolution
-    dataframe that already contains 'hourly_precipitation' (imputed, no NaN gaps).
-    Uses min_periods=1 so the first (hours - 1) rows of a basin record get a
-    partial-window sum rather than NaN.
+    dataframe. hourly_precipitation may contain real NaN gaps (no imputation
+    upstream). min_periods=hours means the full trailing window must be
+    NaN-free for a value to be produced - any missing hour inside the window,
+    or insufficient history at a basin's start of record, yields NaN, which
+    propagates downstream so dataset.py excludes that training window instead
+    of silently summing over a gap.
     """
     result = df.copy()
     for w in windows:
         result[w['name']] = (
             result['hourly_precipitation']
-            .rolling(window=w['hours'], min_periods=1)
+            .rolling(window=w['hours'], min_periods=w['hours'])
             .sum()
         )
     return result
 
 # --------------------------------------------------------------------------------
-# 6. Long NaN Stretch Removal Function
+# 5. Long NaN Stretch Removal Function
 # --------------------------------------------------------------------------------
 def drop_long_flow_nan_stretches(df, seq_length):
     """
@@ -186,15 +186,36 @@ def process_dynamic_data(config):
         # Align to the full timeline starting from the basin's individual birth date
         aligned_df = align_to_timeline(hourly_df, basin_start_date, END_DATE)
         
-        # Step 3: Check original data quality (before imputation)
+        # Step 3: Check original data quality
         flow_available = analyze_data_quality(aligned_df)
-        
-        # Step 4: Impute missing rain values with 0
-        clean_df = impute_missing_rain(aligned_df)
+
+        # Step 3b: Exclude basins without enough combined (flow AND rain) real data.
+        # Checked before any further processing so excluded basins skip the rest of
+        # the pipeline entirely and never get a processed timeseries CSV written -
+        # dataset.py already treats a missing CSV as "basin not available."
+        combined_available = analyze_combined_availability(aligned_df)
+        if combined_available < config['min_combined_availability_pct']:
+            availability_records.append({
+                'gauge_id': file_name.replace('.csv', ''),
+                'availability_pct': flow_available,
+                'combined_availability_pct': combined_available,
+                'excluded': True,
+            })
+            tqdm.write(
+                f"Skipped {file_name}: {combined_available:.2f}% combined flow+rain "
+                f"availability, below the {config['min_combined_availability_pct']}% threshold."
+            )
+            continue
+
+        # Step 4: Rain gaps are left as real NaN here (no imputation), the same way
+        # Flow_m3_sec already is. dataset.py's existing valid_indices check already
+        # excludes any training window touching a NaN in either, so this is the only
+        # change needed to make rain "skip" instead of fabricating 0.0 for gaps.
+        clean_df = aligned_df.copy()
 
         # Step 4b: Add long-window cumulative (trailing rolling-sum) rain features.
-        # Must run after imputation (so gaps do not poison rolling sums) and before
-        # drop_long_flow_nan_stretches (so rolling sees a fully contiguous hourly index).
+        # Must run before drop_long_flow_nan_stretches (so rolling sees a fully
+        # contiguous hourly index).
         clean_df = add_cumulative_rain_features(clean_df, config['cumulative_rain_windows'])
 
         # Step 5: Remove NaN stretches longer than seq_length (untrainable dead weight)
@@ -237,6 +258,8 @@ def process_dynamic_data(config):
         availability_records.append({
             'gauge_id': file_name.replace('.csv', ''),
             'availability_pct': flow_available,
+            'combined_availability_pct': combined_available,
+            'excluded': False,
             'flow_mean': flow_mean,
             'flow_std': flow_std,
             **rain_norm_stats,
