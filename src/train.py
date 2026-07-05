@@ -3,7 +3,9 @@ Module: train.py
 Description: Main Training, Validation, and Optimization Pipeline for Dynamic Multi-Horizon EA-LSTM.
 """
 
+import argparse
 import os
+import shutil
 import yaml
 import torch
 import torch.nn as nn
@@ -161,23 +163,10 @@ def plot_training_curves(train_losses, val_losses, loss_setting, exp_dir):
     print(f"\n[OK] Training loss curves chart successfully exported to: {output_path}")
 
 
-def main():
+def main(config_path="configs/config.yml"):
     # Step 1: Ingest setup assets and configuration parameters
-    #CONFIG_PATH = "configs/config.yml"
-    #config = load_config(CONFIG_PATH)
-    if os.path.exists("configs/config_temp.yml"):
-        CONFIG_PATH = "configs/config_temp.yml"
-    else:
-        CONFIG_PATH = "configs/config.yml"
-        
-    config = load_config(CONFIG_PATH)
-    
-    if os.path.exists("configs/config_temp.yml"):
-        try:
-            os.remove("configs/config_temp.yml")
-        except:
-            pass
-    
+    config = load_config(config_path)
+
     set_seed(config.get('seed', 42))
     
     device_str = config.get('device', 'cpu')
@@ -223,6 +212,12 @@ def main():
     run_dir = config.get('run_dir', './runs/')
     exp_dir = os.path.join(run_dir, config['experiment_name'])
     os.makedirs(exp_dir, exist_ok=True)
+
+    # Preserve an exact copy of the config that produced this run, so it's never
+    # ambiguous later which settings a given checkpoint came from.
+    saved_config_path = os.path.join(exp_dir, "config.yml")
+    if os.path.abspath(config_path) != os.path.abspath(saved_config_path):
+        shutil.copy(config_path, saved_config_path)
 
     use_wandb = config.get('use_wandb', False)
     if use_wandb:
@@ -313,4 +308,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Train the EA-LSTM flash flood model.")
+    parser.add_argument("--config", type=str, default="configs/config.yml",
+                         help="Path to the YAML config file for this run.")
+    args = parser.parse_args()
+    main(args.config)

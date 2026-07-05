@@ -8,10 +8,13 @@ The outputs serve as a robust foundational dataset for deep learning rainfall-ru
 
 Pipeline Architecture & Functional Stages:
 1. Hourly Resampling:
-   Transforms raw temporal records into uniform 1-hour block intervals. To preserve the 
-   physical constraints of hydro-meteorological variables, cumulative features (precipitation) 
-   are aggregated using a localized temporal sum, while continuous state features (discharge/flow) 
-   are aggregated via a temporal mean. Bounds are defined using 'left' inclusive indexing.
+   Transforms raw temporal records into uniform 1-hour block intervals. To preserve the
+   physical constraints of hydro-meteorological variables, cumulative features (precipitation)
+   are aggregated using a localized temporal sum, while continuous state features (discharge/flow)
+   are aggregated via a temporal mean. Both aggregations require every raw sub-hourly reading in
+   the hour to be present and non-NaN; if any reading is missing, the hour's result is NaN rather
+   than a value silently computed from incomplete data. Bounds are defined using 'left' inclusive
+   indexing.
 
 2. Timeline Realignment & Gap Injection:
    Enforces a strict, continuous hourly index mapped between the basin's earliest available 
@@ -48,16 +51,26 @@ def load_config(yaml_path):
 # --------------------------------------------------------------------------------
 def resample_to_hourly(df):
     """
-    Resample raw data to hourly resolution.
-    Flow is averaged, rain is summed.
+    Resample raw data to hourly resolution. An hour's flow or rain value is only
+    computed when every raw sub-hourly reading in that hour is present and non-NaN;
+    otherwise the result is NaN. This avoids pandas' default aggregation behavior,
+    which would otherwise fabricate a plausible-looking value from incomplete data:
+    sum() treats an all-NaN/empty group as 0.0, and mean() with its default
+    skipna=True silently averages over just the present sub-readings.
     """
     df['date'] = pd.to_datetime(df['date'])
     df.set_index('date', inplace=True)
-    
+
+    def strict_sum(s):
+        return np.nan if len(s) == 0 or s.isna().any() else s.sum()
+
+    def strict_mean(s):
+        return np.nan if len(s) == 0 or s.isna().any() else s.mean()
+
     # Standardized to use 'hourly_precipitation' as the core dynamic feature name
     resampled = df.resample('h', closed='left', label='left').agg({
-        'Flow_m3_sec': 'mean',
-        'mean_rain': 'sum'
+        'Flow_m3_sec': strict_mean,
+        'mean_rain': strict_sum
     })
     resampled = resampled.rename(columns={'mean_rain': 'hourly_precipitation'})
     return resampled

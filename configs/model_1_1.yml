@@ -6,7 +6,7 @@
 
 
 # experiment name, used as folder name
-experiment_name: model_0
+experiment_name: model_1_1
 
 # --- Weights & Biases ---
 use_wandb: true
@@ -263,10 +263,6 @@ availability_report_file: ./data/processed/data_availability_report.csv
 cumulative_rain_windows:
   - name: rain_cum_1week
     hours: 168
-  - name: rain_cum_4weeks
-    hours: 672
-  - name: rain_cum_8weeks
-    hours: 1344
 
 # Minimum % of hours (from basin_start_date through END_DATE) where BOTH Flow_m3_sec
 # and hourly_precipitation are non-NaN, required for a basin to be used at all. Basins

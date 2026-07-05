@@ -7,6 +7,7 @@ Description: Lightweight Evaluation Pipeline for an arbitrary checkpoint.
              full-test-period hydrographs.
 """
 
+import argparse
 import os
 import yaml
 import torch
@@ -77,9 +78,9 @@ def compute_nse_per_lead(actual_leads_dict, pred_leads_dict, forecast_lead_times
     return nse_per_lead
 
 
-def main():
+def main(config_path="configs/config.yml"):
     # Step 1: Config ingestion and model setup from the configured checkpoint
-    config = load_config("configs/config.yml")
+    config = load_config(config_path)
     model, device, exp_dir = setup_evaluation_from_checkpoint(config)
 
     # Step 2: Initialize sterile test split tracking arrays
@@ -160,4 +161,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Quick-evaluate an arbitrary checkpoint via config['checkpoint_path'].")
+    parser.add_argument("--config", type=str, default="configs/config.yml",
+                         help="Path to the YAML config file matching the run to evaluate.")
+    args = parser.parse_args()
+    main(args.config)

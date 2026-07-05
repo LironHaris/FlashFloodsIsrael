@@ -6,7 +6,7 @@
 
 
 # experiment name, used as folder name
-experiment_name: model_0
+experiment_name: model_1_3
 
 # --- Weights & Biases ---
 use_wandb: true
@@ -299,6 +299,8 @@ forcings: maurer_extended
 dynamic_inputs:
 - hourly_precipitation
 - rain_cum_1week
+- rain_cum_4weeks
+- rain_cum_8weeks
 
 # which columns to use as target
 target_variables:

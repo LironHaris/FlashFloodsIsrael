@@ -6,7 +6,7 @@
 
 
 # experiment name, used as folder name
-experiment_name: model_0
+experiment_name: model_1_2
 
 # --- Weights & Biases ---
 use_wandb: true
@@ -265,8 +265,6 @@ cumulative_rain_windows:
     hours: 168
   - name: rain_cum_4weeks
     hours: 672
-  - name: rain_cum_8weeks
-    hours: 1344
 
 # Minimum % of hours (from basin_start_date through END_DATE) where BOTH Flow_m3_sec
 # and hourly_precipitation are non-NaN, required for a basin to be used at all. Basins
@@ -299,6 +297,7 @@ forcings: maurer_extended
 dynamic_inputs:
 - hourly_precipitation
 - rain_cum_1week
+- rain_cum_4weeks
 
 # which columns to use as target
 target_variables:

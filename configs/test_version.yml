@@ -6,10 +6,10 @@
 
 
 # experiment name, used as folder name
-experiment_name: model_0
+experiment_name: test_version
 
 # --- Weights & Biases ---
-use_wandb: true
+use_wandb: false
 wandb_project: flash-floods-israel
 wandb_api_key: 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
 
@@ -186,7 +186,7 @@ learning_rate: 0.00033630495148045725 #0.001
 batch_size: 256
 
 # Number of training epochs
-epochs: 50 #20
+epochs: 1
 
 # adds noise with given std to the labels during training. Leave empty or set to 0 if not used.
 target_noise_std: 0
@@ -263,10 +263,6 @@ availability_report_file: ./data/processed/data_availability_report.csv
 cumulative_rain_windows:
   - name: rain_cum_1week
     hours: 168
-  - name: rain_cum_4weeks
-    hours: 672
-  - name: rain_cum_8weeks
-    hours: 1344
 
 # Minimum % of hours (from basin_start_date through END_DATE) where BOTH Flow_m3_sec
 # and hourly_precipitation are non-NaN, required for a basin to be used at all. Basins

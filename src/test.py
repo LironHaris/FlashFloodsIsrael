@@ -5,6 +5,7 @@ Description: Evaluation Pipeline for Multi-Horizon EA-LSTM. Loads trained weight
              and exports comprehensive evaluation reports basin-by-basin.
 """
 
+import argparse
 import os
 import yaml
 import torch
@@ -259,9 +260,9 @@ def generate_basin_summary_table(basin, df, config, output_dir):
     return summary_df
 
 
-def main():
+def main(config_path="configs/config.yml"):
     # Step 1: Config ingestion and model setup
-    config = load_config("configs/config.yml")
+    config = load_config(config_path)
     model, device, exp_dir = setup_evaluation(config)
 
     # Step 2: Initialize sterile test split tracking arrays
@@ -389,4 +390,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Evaluate a trained EA-LSTM model.")
+    parser.add_argument("--config", type=str, default="configs/config.yml",
+                         help="Path to the YAML config file matching the run to evaluate.")
+    args = parser.parse_args()
+    main(args.config)

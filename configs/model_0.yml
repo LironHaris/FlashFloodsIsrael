@@ -261,12 +261,7 @@ availability_report_file: ./data/processed/data_availability_report.csv
 # entries freely; the pipeline loops over this list and is not hardcoded to any count.
 # NOTE: keep 'name' values in sync with dynamic_inputs below - not auto-enforced.
 cumulative_rain_windows:
-  - name: rain_cum_1week
-    hours: 168
-  - name: rain_cum_4weeks
-    hours: 672
-  - name: rain_cum_8weeks
-    hours: 1344
+  
 
 # Minimum % of hours (from basin_start_date through END_DATE) where BOTH Flow_m3_sec
 # and hourly_precipitation are non-NaN, required for a basin to be used at all. Basins
@@ -298,7 +293,6 @@ forcings: maurer_extended
 #     - total_precipitation_nldas_hourly
 dynamic_inputs:
 - hourly_precipitation
-- rain_cum_1week
 
 # which columns to use as target
 target_variables:
