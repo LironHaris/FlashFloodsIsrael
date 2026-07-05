@@ -6,7 +6,7 @@
 
 
 # experiment name, used as folder name
-experiment_name: model_1_train_1
+experiment_name: model_1_train_2
 
 # --- Weights & Biases ---
 use_wandb: true
@@ -186,7 +186,7 @@ learning_rate: 0.00033630495148045725 #0.001
 batch_size: 256
 
 # Number of training epochs
-epochs: 20 #20
+epochs: 50 #20
 
 # adds noise with given std to the labels during training. Leave empty or set to 0 if not used.
 target_noise_std: 0
@@ -261,9 +261,7 @@ availability_report_file: ./data/processed/data_availability_report.csv
 cumulative_rain_windows:
   - name: rain_cum_1week
     hours: 168
-  - name: rain_cum_2week
-    hours: 336
-
+  
 generic_data_config:
   time_series_path: processed/timeseries/
 
@@ -289,7 +287,6 @@ forcings: maurer_extended
 dynamic_inputs:
 - hourly_precipitation
 - rain_cum_1week
-- rain_cum_2week
 
 # which columns to use as target
 target_variables:
