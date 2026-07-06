@@ -16,7 +16,7 @@ import matplotlib.dates as mdates
 
 LEAD_COLORS = {0: '#2b8cbe', 1: '#8856a7', 2: '#cb181d', 3: '#86592d', 6: '#cb181d', 12: '#86592d', 24: '#f16913'}
 LEAD_STYLES = {0: '-',       1: '--',      2: '--',      3: ':',       6: '--',      12: ':',      24: ':'}
-THRESHOLD_COLORS = {2: '#bae4b3', 5: '#74c476', 10: '#ef3b2c', 20: '#990000', 30: '#67000d'}
+THRESHOLD_COLORS = {2: '#238b45', 5: '#238b45', 10: '#ef3b2c', 20: '#990000', 30: '#67000d'}
 
 
 def load_config(yaml_path):
@@ -72,7 +72,7 @@ def _build_hydrograph_figure(plot_df, title, config, rp_filter=None, hourly_xtic
             thresh_val = float(plot_df[thresh_col].iloc[0])
             if thresh_val > 0:
                 ax.axhline(y=thresh_val, color=THRESHOLD_COLORS.get(rp, '#d9d9d9'),
-                           linestyle='-.', linewidth=1.0, alpha=0.9,
+                           linestyle='-.', linewidth=2.2, alpha=1.0,
                            label=f'{rp}yr RP ({thresh_val:.1f} m³/s)')
 
                 count_col = f"hit_rate_pred_lead_{longest_lead}h_{rp}yr_count"
@@ -95,7 +95,7 @@ def _build_hydrograph_figure(plot_df, title, config, rp_filter=None, hourly_xtic
     ax.legend(loc='upper right', frameon=True, facecolor='#ffffff', edgecolor='#e2e2e2', fontsize=9)
 
     if hourly_xticks:
-        ax.xaxis.set_major_locator(mdates.HourLocator(interval=6))
+        ax.xaxis.set_major_locator(mdates.HourLocator(interval=2))
         ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %Hh'))
         plt.setp(ax.get_xticklabels(), rotation=45, ha='right')
 

@@ -439,7 +439,7 @@ hourly_flow_return_periods_combined : ./data/processed/return_periods/new_return
 hydro_year_start_month: 10 # October
 min_years_for_gev: 5       # Minimum data points (years) required to fit GEV stably
 gev_plausibility_scalar: 10 # Warn if the theoretical value at the largest configured return period exceeds this multiple of the max observed annual maximum
-visual_buffer_days: 4
+visual_buffer_days: 1
 event_merge_gap_hours: 6
 find_flood_events_output: ./data/processed/flood_events/flood_events_all_basins.csv
 
