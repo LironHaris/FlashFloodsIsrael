@@ -103,11 +103,14 @@ def _build_hydrograph_figure(plot_df, title, config, rp_filter=None, hourly_xtic
     return fig
 
 
-def plot_basin_storm_event(basin_id, start_window, end_window, config):
+def plot_basin_storm_event(basin_id, start_window, end_window, config, label=None, event_idx=None):
     """
     Fixed-size hydrograph for a targeted storm event window, with an hourly time axis.
     Loads the basin's visual_report CSV, applies visual_buffer_days padding,
     saves a PNG, and returns the figure. Returns None if data is missing or empty.
+    label/event_idx: when both are given (e.g. 'TP'/'FN'/'FP' from
+    compare_flood_events.py), they set the filename and a title suffix so
+    real/predicted/matched events are distinguishable at a glance.
     """
     exp_dir = _get_exp_dir(config)
     report_path = os.path.join(exp_dir, "visualization_reports", f"visual_report_basin_{basin_id}.csv")
@@ -132,11 +135,15 @@ def plot_basin_storm_event(basin_id, start_window, end_window, config):
         print(f"[ERROR] No data in window for basin {basin_id}.")
         return None
 
-    title = (f"Basin {basin_id} — Storm Event\n"
+    title = (f"Basin {basin_id} — Storm Event" + (f" [{label}]" if label else "") + "\n"
              f"Core: {core_start.strftime('%Y-%m-%d %H:%M')} → {core_end.strftime('%Y-%m-%d %H:%M')}")
 
     fig = _build_hydrograph_figure(plot_df, title, config, hourly_xticks=True)
-    _save_figure(fig, exp_dir, f"hydrograph_basin_{basin_id}_storm.png")
+    if event_idx is not None and label is not None:
+        filename = f"hydrograph_{basin_id}_event{event_idx}_{label}.png"
+    else:
+        filename = f"hydrograph_basin_{basin_id}_storm.png"
+    _save_figure(fig, exp_dir, filename)
     return fig
 
 

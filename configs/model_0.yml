@@ -443,6 +443,12 @@ visual_buffer_days: 1
 event_merge_gap_hours: 6
 find_flood_events_output: ./data/processed/flood_events/flood_events_all_basins.csv
 
+# Return period (years) used to select which flood events get compared/plotted as
+# TP/FP/FN (see compare_flood_events.py). The underlying event scans still cover every
+# configured return_periods_years/forecast_lead_times for analysis; this only controls
+# which single RP's events become the comparison plots.
+prediction_threshold: 2
+
 # --- Multi-Horizon Forecast Settings (In Hours ahead) ---
 forecast_lead_times: [0, 1, 2, 3]
 

@@ -42,33 +42,36 @@ def load_basin_threshold(basin_id, target_rp, config):
     return float(value)
 
 
-def scan_for_events(basin_id, target_rp, buffer_days, config):
+def scan_for_events(basin_id, target_rp, buffer_days, config, value_column='actual_flow'):
     """
-    Scans the basin's test report to isolate continuous blocks where the 
-    actual streamflow crossed the designated threshold, returning bound parameters.
+    Scans the basin's test report to isolate continuous blocks where the given
+    value column (actual streamflow by default, or a pred_lead_*h column for
+    predicted-exceedance scans) crossed the designated threshold, returning
+    bound parameters.
     """
     run_dir = config.get('run_dir', './runs/')
     exp_dir = os.path.join(run_dir, config['experiment_name'])
     report_path = os.path.join(exp_dir, "visualization_reports", f"visual_report_basin_{basin_id}.csv")
-    
+
     if not os.path.exists(report_path):
         print(f"  [Error] Evaluation report missing for basin {basin_id}. Run test.py first.")
         return []
-        
+
     # Load test results
     df = pd.read_csv(report_path)
     df['timestamp'] = pd.to_datetime(df['timestamp'])
-    
+
     # Fetch the critical physical threshold value
     threshold_value = load_basin_threshold(basin_id, target_rp, config)
     if threshold_value is None or threshold_value <= 0:
         print(f"  [Info] Threshold value for {target_rp}yr RP is unstable (<=0). Skipping basin scan.")
         return []
 
-    # Locate indices where actual flow crossed the threshold
-    exceedance_mask = df['actual_flow'] >= threshold_value
+    # Locate indices where the value column crossed the threshold
+    exceedance_mask = df[value_column] >= threshold_value
     if not exceedance_mask.any():
-        print(f"  [-] Basin {basin_id} never exceeded the {target_rp}-year threshold during the test split.")
+        print(f"  [-] Basin {basin_id} never exceeded the {target_rp}-year threshold "
+              f"in '{value_column}' during the test split.")
         return []
 
     # Step 1 — find initial exceedance blocks
@@ -81,7 +84,7 @@ def scan_for_events(basin_id, target_rp, buffer_days, config):
         raw_events.append({
             'core_start': chunk['timestamp'].min(),
             'core_end':   chunk['timestamp'].max(),
-            'peak_flow':  chunk['actual_flow'].max(),
+            'peak_flow':  chunk[value_column].max(),
         })
 
     # Step 3 — merge events whose inter-event gap is within the configured tolerance

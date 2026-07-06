@@ -26,6 +26,8 @@ from dataset import IsraelBasinsDataset
 from test import evaluate_basin_sequences, build_and_export_report
 import plot_hydrographs as ph
 import find_flood_events as ffe
+import find_predicted_flood_events as pfe
+import compare_flood_events as cfe
 
 
 def load_config(yaml_path):
@@ -129,20 +131,25 @@ def main(config_path="configs/config.yml"):
             nse_accumulator[lead].append(nse_val)
 
     if use_wandb:
-        # Scan for flood events and plot each one
+        # Scan real + predicted flood events, then compare them at prediction_threshold
+        # RP to classify each as TP/FP/FN - one graph per event, no duplicates.
         print("\n[INFO] Scanning for flood events across all basins...")
         ffe.main(config=config, basin_ids=test_basins)
+        print("\n[INFO] Scanning for predicted flood events across all basins...")
+        pfe.main(config=config, basin_ids=test_basins)
+        print("\n[INFO] Comparing real vs. predicted flood events...")
+        comparison_path = cfe.main(config=config, basin_ids=test_basins)
 
-        events_path = config['find_flood_events_output']
-        if os.path.exists(events_path):
-            events_df = pd.read_csv(events_path)
-            for _, event in events_df.iterrows():
+        if os.path.exists(comparison_path):
+            comparison_df = pd.read_csv(comparison_path, dtype={'basin_id': str})
+            for _, event in comparison_df.iterrows():
                 basin = str(event['basin_id'])
-                fig = ph.plot_basin_storm_event(basin, event['core_start'], event['core_end'], config)
+                label = event['label']
+                idx = int(event['event_idx'])
+                fig = ph.plot_basin_storm_event(basin, event['core_start'], event['core_end'],
+                                                 config, label=label, event_idx=idx)
                 if fig is not None:
-                    rp = int(event['return_period_years'])
-                    idx = int(event['event_idx'])
-                    key = f"quicktest/flood_events/{basin}/rp{rp}yr_event{idx}"
+                    key = f"quicktest/flood_events/{basin}/event{idx}_{label}"
                     wandb.log({key: wandb.Image(fig)})
                     plt.close(fig)
 
