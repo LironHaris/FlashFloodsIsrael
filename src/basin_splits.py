@@ -3,18 +3,15 @@ import numpy as np
 import os
 import yaml
 
-def create_basin_splits(input_path, output_dir, train_ratio=0.7, val_ratio=0.15):
+def create_basin_splits(basin_ids, output_dir, seed, train_ratio=0.7, val_ratio=0.15):
     """
-    Partition basin IDs into training, validation, test, and master lists using seed from config.
+    Partition the given basin IDs into training, validation, test, and master
+    lists (seeded shuffle), writing israel_train.txt/israel_val.txt/
+    israel_test.txt/all_basins.txt into output_dir.
     """
-    with open('configs/config.yml', 'r') as f:
-        config = yaml.safe_load(f)
-    seed_value = config.get('seed', 42)
-    
-    df = pd.read_csv(input_path)
-    stations = df['gauge_id'].unique().tolist()
-    
-    np.random.seed(seed_value)
+    stations = list(basin_ids)
+
+    np.random.seed(seed)
     np.random.shuffle(stations)
     
     n = len(stations)
@@ -29,7 +26,7 @@ def create_basin_splits(input_path, output_dir, train_ratio=0.7, val_ratio=0.15)
     }
     
     for filename, ids in splits.items():
-        with open(os.path.join(output_dir, filename), 'w') as f:
+        with open(os.path.join(output_dir, filename), 'w', newline='\n') as f:
             for s_id in ids:
                 f.write(f"{s_id}\n")
     
@@ -37,6 +34,8 @@ def create_basin_splits(input_path, output_dir, train_ratio=0.7, val_ratio=0.15)
     print(f"Total: {len(stations)} (Train: {len(splits['israel_train.txt'])}, Val: {len(splits['israel_val.txt'])}, Test: {len(splits['israel_test.txt'])})")
 
 if __name__ == "__main__":
-    INPUT_CSV = os.path.join('data', 'processed', 'static', 'static_attributes_nh.csv')
-    BASIN_DIR = os.path.join('data', 'basin_lists')
-    create_basin_splits(INPUT_CSV, BASIN_DIR)
+    with open('configs/config.yml', 'r') as f:
+        config = yaml.safe_load(f)
+    report_df = pd.read_csv(config['availability_report_file'])
+    basin_ids = report_df.loc[~report_df['excluded'], 'gauge_id'].tolist()
+    create_basin_splits(basin_ids, os.path.dirname(config['train_basin_file']), config.get('seed', 42))

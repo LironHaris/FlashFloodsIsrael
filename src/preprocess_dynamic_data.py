@@ -41,6 +41,8 @@ import pandas as pd
 import numpy as np
 from tqdm import tqdm
 
+import basin_splits as bs
+
 def load_config(yaml_path):
     """Load the YAML configuration file."""
     with open(yaml_path, 'r', encoding='utf-8') as file:
@@ -288,6 +290,13 @@ def process_dynamic_data(config):
     report_df = pd.DataFrame(availability_records)
     report_df.to_csv(report_path, index=False)
     print(f"\nSummary report saved to: {report_path}")
+
+    # Regenerate the basin split lists from exactly the basins that passed the
+    # availability gate this run, so israel_train/val/test.txt can never
+    # reference a basin with no processed CSV on disk.
+    included_basins = [r['gauge_id'] for r in availability_records if not r['excluded']]
+    basin_lists_dir = os.path.dirname(config['train_basin_file'])
+    bs.create_basin_splits(included_basins, basin_lists_dir, config.get('seed', 42))
 
 if __name__ == "__main__":
     CONFIG_PATH = "configs/config.yml"
