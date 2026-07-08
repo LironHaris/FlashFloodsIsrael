@@ -23,7 +23,7 @@ SWEEP_EXP_NAME="model_0_train_2"
 RUN_DIR="./runs/"
 CHECKPOINT_SRC="${RUN_DIR}${SWEEP_EXP_NAME}/${RUN_ID}/best_model.pt"
 
-# ΰπηπε ξιιφψιν ΰϊ ϊιχιιϊ διςγ δξωεμαϊ ςν δ-ID ωμ δψιφδ δπεληιϊ
+# ΧΧ Χ—Χ Χ• ΧΧ™Χ™Χ¦Χ¨Χ™Χ ΧΧª ΧªΧ™Χ§Χ™Χ™Χª Χ”Χ™ΧΆΧ“ Χ”ΧΧ©Χ•ΧΧ‘Χª ΧΆΧ Χ”-ID Χ©Χ Χ”Χ¨Χ™Χ¦Χ” Χ”Χ Χ•Χ›Χ—Χ™Χª
 TARGET_DIR="${RUN_DIR}${SWEEP_EXP_NAME}_eval_${RUN_ID}"
 
 echo "[INFO] Preparing evaluation environment for Run ID: ${RUN_ID}"
@@ -32,11 +32,11 @@ if [ ! -f "$CHECKPOINT_SRC" ]; then
     exit 1
 fi
 
-# δςϊχϊ δξωχεμεϊ μξιχεν δρθψιμι ωδξεγμ ξφτδ με
+# Χ”ΧΆΧªΧ§Χª Χ”ΧΧ©Χ§Χ•ΧΧ•Χª ΧΧΧ™Χ§Χ•Χ Χ”Χ΅ΧΧ¨Χ™ΧΧ™ Χ©Χ”ΧΧ•Χ“Χ ΧΧ¦Χ¤Χ” ΧΧ•
 mkdir -p "$TARGET_DIR"
 cp "$CHECKPOINT_SRC" "$TARGET_DIR/best_model.pt"
 
-# δψφϊ δφιπεψ δξμΰ (ςεαγ ιωιψεϊ ξεμ δ-config.yml ωςψλϊ ιγπιϊ)
+# Χ”Χ¨Χ¦Χª Χ”Χ¦Χ™Χ Χ•Χ¨ Χ”ΧΧΧ (ΧΆΧ•Χ‘Χ“ Χ™Χ©Χ™Χ¨Χ•Χª ΧΧ•Χ Χ”-config.yml Χ©ΧΆΧ¨Χ›Χª Χ™Χ“Χ Χ™Χª)
 echo "[INFO] Spawning test.py pipeline..."
 python src/test.py
 

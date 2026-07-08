@@ -6,13 +6,13 @@
 #SBATCH --mem=64G
 #SBATCH --time=04:00:00
 
-# 1. טעינת סביבת העבודה של המעבדה
+# 1. ׳˜׳¢׳™׳ ׳× ׳¡׳‘׳™׳‘׳× ׳”׳¢׳‘׳•׳“׳” ׳©׳ ׳”׳׳¢׳‘׳“׳”
 source /sci/labs/efratmorin/liron.haris/miniconda3/etc/profile.d/conda.sh
 conda activate flashfloods
 
-# 2. מעקפי בעיית הדיסק המלא
+# 2. ׳׳¢׳§׳₪׳™ ׳‘׳¢׳™׳™׳× ׳”׳“׳™׳¡׳§ ׳”׳׳׳
 export HOME=/sci/labs/efratmorin/liron.haris/
 cd /sci/labs/efratmorin/liron.haris/FlashFloodsIsrael
 
-# 3. הרצת סקריפט ה-Preprocess שלך
+# 3. ׳”׳¨׳¦׳× ׳¡׳§׳¨׳™׳₪׳˜ ׳”-Preprocess ׳©׳׳
 python src/preprocess_static_attributes.py

@@ -2,24 +2,24 @@
 #SBATCH --job-name=find_flood_events
 #SBATCH --output=/sci/labs/efratmorin/liron.haris/FlashFloodsIsrael/runs/events_%j.out
 #SBATCH --error=/sci/labs/efratmorin/liron.haris/FlashFloodsIsrael/runs/events_%j.err
-#SBATCH --cpus-per-task=4              # 4 μιαεϊ ξςαγ μηιωεαιν ξχαιμιιν ςμ δΰβπιν
-#SBATCH --mem=24G                       # 24 βιβδ ζιλψεο RAM μθςιπϊ χεαφι δϊεφΰεϊ
-#SBATCH --time=06:00:00                 # δβαμϊ ζξο ψηαδ ωμ 6 ωςεϊ (ιρϊιιν αδψαδ τηεϊ)
+#SBATCH --cpus-per-task=4              # 4 ΧΧ™Χ‘Χ•Χª ΧΧΆΧ‘Χ“ ΧΧ—Χ™Χ©Χ•Χ‘Χ™Χ ΧΧ§Χ‘Χ™ΧΧ™Χ™Χ ΧΆΧ Χ”ΧΧ’Χ Χ™Χ
+#SBATCH --mem=24G                       # 24 Χ’Χ™Χ’Χ” Χ–Χ™Χ›Χ¨Χ•Χ RAM ΧΧΧΆΧ™Χ Χª Χ§Χ•Χ‘Χ¦Χ™ Χ”ΧªΧ•Χ¦ΧΧ•Χª
+#SBATCH --time=06:00:00                 # Χ”Χ’Χ‘ΧΧª Χ–ΧΧ Χ¨Χ—Χ‘Χ” Χ©Χ 6 Χ©ΧΆΧ•Χª (Χ™Χ΅ΧªΧ™Χ™Χ Χ‘Χ”Χ¨Χ‘Χ” Χ¤Χ—Χ•Χª)
 
-# 1. θςιπϊ δ-Conda ωδϊχπε αξςαγδ
+# 1. ΧΧΆΧ™Χ Χª Χ”-Conda Χ©Χ”ΧªΧ§Χ Χ• Χ‘ΧΧΆΧ‘Χ“Χ”
 source /sci/labs/efratmorin/liron.haris/miniconda3/etc/profile.d/conda.sh
 
-# 2. ΰχθιαφιδ ωμ ραιαϊ δτψειχθ
+# 2. ΧΧ§ΧΧ™Χ‘Χ¦Χ™Χ” Χ©Χ Χ΅Χ‘Χ™Χ‘Χª Χ”Χ¤Χ¨Χ•Χ™Χ§Χ
 conda activate flashfloods
 
-# 3. τϊψεο αςιιϊ δγιρχ ωμ Matplotlib (αξχψδ ωδρχψιτθ ξιιφψ διγψεβψτιν ωμ δΰιψεςιν)
+# 3. Χ¤ΧªΧ¨Χ•Χ Χ‘ΧΆΧ™Χ™Χª Χ”Χ“Χ™Χ΅Χ§ Χ©Χ Matplotlib (Χ‘ΧΧ§Χ¨Χ” Χ©Χ”Χ΅Χ§Χ¨Χ™Χ¤Χ ΧΧ™Χ™Χ¦Χ¨ Χ”Χ™Χ“Χ¨Χ•Χ’Χ¨Χ¤Χ™Χ Χ©Χ Χ”ΧΧ™Χ¨Χ•ΧΆΧ™Χ)
 export MPLCONFIGDIR=/sci/labs/efratmorin/liron.haris/.matplotlib_cache
 
-# 4. δβγψϊ ξωϊπδ ραιαδ ςαεψ δ-Home αξςαγδ
+# 4. Χ”Χ’Χ“Χ¨Χª ΧΧ©ΧªΧ Χ” Χ΅Χ‘Χ™Χ‘Χ” ΧΆΧ‘Χ•Χ¨ Χ”-Home Χ‘ΧΧΆΧ‘Χ“Χ”
 export HOME=/sci/labs/efratmorin/liron.haris/
 
-# 5. ξςαψ μϊιχιιϊ δτψειχθ
+# 5. ΧΧΆΧ‘Χ¨ ΧΧªΧ™Χ§Χ™Χ™Χª Χ”Χ¤Χ¨Χ•Χ™Χ§Χ
 cd /sci/labs/efratmorin/liron.haris/FlashFloodsIsrael
 
-# 6. δψφϊ ρχψιτθ ζιδει δΰιψεςιν
+# 6. Χ”Χ¨Χ¦Χª Χ΅Χ§Χ¨Χ™Χ¤Χ Χ–Χ™Χ”Χ•Χ™ Χ”ΧΧ™Χ¨Χ•ΧΆΧ™Χ
 python src/find_floods_events.py

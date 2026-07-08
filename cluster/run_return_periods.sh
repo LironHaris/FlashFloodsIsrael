@@ -6,14 +6,14 @@
 #SBATCH --mem=32G
 #SBATCH --time=03:00:00
 
-# 1. θςιπϊ δραιαδ εδχεπγδ
+# 1. ΧΧΆΧ™Χ Χª Χ”Χ΅Χ‘Χ™Χ‘Χ” Χ•Χ”Χ§Χ•Χ Χ“Χ”
 source /sci/labs/efratmorin/liron.haris/miniconda3/etc/profile.d/conda.sh
 conda activate flashfloods
 
-# 2. ξςχτι γιρχ εξιχεν
+# 2. ΧΧΆΧ§Χ¤Χ™ Χ“Χ™Χ΅Χ§ Χ•ΧΧ™Χ§Χ•Χ
 export HOME=/sci/labs/efratmorin/liron.haris/
 export MPLCONFIGDIR=/sci/labs/efratmorin/liron.haris/.matplotlib_cache
 cd /sci/labs/efratmorin/liron.haris/FlashFloodsIsrael
 
-# 3. δψφϊ δρχψιτθ
+# 3. Χ”Χ¨Χ¦Χª Χ”Χ΅Χ§Χ¨Χ™Χ¤Χ
 python src/calculate_return_periods.py
