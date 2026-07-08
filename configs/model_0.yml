@@ -17,7 +17,7 @@ wandb_api_key: wandb_v1_Z036AuzFieOhgK1MO30GorZqaPc_BV0eCzy8eaXqsqlYCl5KoxqhxoYw
 run_dir: ./runs/
 
 # files to specify training, validation and test basins (relative to code root or absolute path)
-use_basin_splits: false
+use_basin_splits: true
 train_basin_file: data/basin_lists/israel_train.txt
 validation_basin_file: data/basin_lists/israel_val.txt
 test_basin_file: data/basin_lists/israel_test.txt
@@ -268,6 +268,20 @@ cumulative_rain_windows:
 # below this are excluded from training/val/test entirely (no processed CSV is written),
 # though they still get a flagged row in the availability report for auditing.
 min_combined_availability_pct: 50
+
+# Per-dynamic-input NaN tolerance: the max % of a window's timesteps that
+# may be NaN for that feature before the window is excluded outright. Below
+# the threshold, the window is kept and NaNs in that feature are imputed as
+# literal zero rainfall. train_max_nan_pct=0 everywhere reproduces today's
+# exact "any NaN excludes" behavior for training (never fabricate training
+# data). eval_max_nan_pct is the val/test tolerance - set higher to keep
+# more real-world-realistic (including flood-adjacent) windows in
+# evaluation instead of only scoring on the cleanest data. A feature with no
+# entry here defaults to 0/0 (today's behavior, unchanged).
+dynamic_input_nan_tolerance:
+  hourly_precipitation:
+    train_max_nan_pct: 0
+    eval_max_nan_pct: 100
 
 generic_data_config:
   time_series_path: processed/timeseries/

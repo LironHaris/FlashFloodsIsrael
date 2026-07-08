@@ -110,6 +110,17 @@ def analyze_combined_availability(aligned_df):
     ).mean() * 100
     return combined_available_pct
 
+def combined_availability_for_periods(aligned_df, periods):
+    """
+    Same as analyze_combined_availability, but restricted to the union of the
+    given (start_date_or_None, end_date) slices of aligned_df. Used to check
+    combined availability separately per split (train/val/test), since a
+    basin can be well-observed in one split and sparse in another.
+    """
+    slices = [aligned_df.loc[start:end] for start, end in periods]
+    combined = pd.concat(slices)
+    return analyze_combined_availability(combined) if not combined.empty else 0.0
+
 # --------------------------------------------------------------------------------
 # 4. Cumulative Rain Feature Function
 # --------------------------------------------------------------------------------
@@ -201,24 +212,38 @@ def process_dynamic_data(config):
         # Align to the full timeline starting from the basin's individual birth date
         aligned_df = align_to_timeline(hourly_df, basin_start_date, END_DATE)
         
-        # Step 3: Check original data quality
+        # Step 3: Check original data quality (informational only, used in the
+        # per-basin console log below - not written to the availability report).
         flow_available = analyze_data_quality(aligned_df)
 
-        # Step 3b: Exclude basins without enough combined (flow AND rain) real data.
+        # Step 3b: Exclude basins with no viable split at all - if a basin fails the
+        # combined (flow AND rain) availability threshold in EVERY one of train/val/test,
+        # there's nothing useful to do with it. A basin passing in just one or two splits
+        # still gets processed here; basin_splits.py decides per-split membership from
+        # these same three values, so e.g. good-train/good-test/no-val data is still used
+        # for train and test, just left out of israel_val.txt.
         # Checked before any further processing so excluded basins skip the rest of
         # the pipeline entirely and never get a processed timeseries CSV written -
         # dataset.py already treats a missing CSV as "basin not available."
-        combined_available = analyze_combined_availability(aligned_df)
-        if combined_available < config['min_combined_availability_pct']:
+        train_bounds = [(p.get('start_date'), p['end_date']) for p in config['train_periods']]
+        combined_train = combined_availability_for_periods(aligned_df, train_bounds)
+        combined_val = combined_availability_for_periods(
+            aligned_df, [(config['validation_start_date'], config['validation_end_date'])])
+        combined_test = combined_availability_for_periods(
+            aligned_df, [(config['test_start_date'], config['test_end_date'])])
+
+        min_pct = config['min_combined_availability_pct']
+        if combined_train < min_pct and combined_val < min_pct and combined_test < min_pct:
             availability_records.append({
                 'gauge_id': file_name.replace('.csv', ''),
-                'availability_pct': flow_available,
-                'combined_availability_pct': combined_available,
+                'combined_availability_pct_train': combined_train,
+                'combined_availability_pct_val': combined_val,
+                'combined_availability_pct_test': combined_test,
                 'excluded': True,
             })
             tqdm.write(
-                f"Skipped {file_name}: {combined_available:.2f}% combined flow+rain "
-                f"availability, below the {config['min_combined_availability_pct']}% threshold."
+                f"Skipped {file_name}: combined availability train={combined_train:.2f}% "
+                f"val={combined_val:.2f}% test={combined_test:.2f}%, below the {min_pct}% threshold in every split."
             )
             continue
 
@@ -241,9 +266,7 @@ def process_dynamic_data(config):
         # target in dataset.py, so they must reflect train-period variability, not the full
         # train+val+test series. Both are drawn from the same slice/fallback branch so they always
         # describe the same underlying sample.
-        train_slice = pd.concat([
-            clean_df.loc[p.get('start_date'):p['end_date']] for p in config['train_periods']
-        ])
+        train_slice = pd.concat([clean_df.loc[start:end] for start, end in train_bounds])
         flow_mean = float(np.nanmean(train_slice['Flow_m3_sec'].values))
         flow_std = float(np.nanstd(train_slice['Flow_m3_sec'].values))
         if not np.isfinite(flow_std) or flow_std == 0.0:
@@ -272,8 +295,9 @@ def process_dynamic_data(config):
         # Record data for the summary report
         availability_records.append({
             'gauge_id': file_name.replace('.csv', ''),
-            'availability_pct': flow_available,
-            'combined_availability_pct': combined_available,
+            'combined_availability_pct_train': combined_train,
+            'combined_availability_pct_val': combined_val,
+            'combined_availability_pct_test': combined_test,
             'excluded': False,
             'flow_mean': flow_mean,
             'flow_std': flow_std,
@@ -293,10 +317,12 @@ def process_dynamic_data(config):
 
     # Regenerate the basin split lists from exactly the basins that passed the
     # availability gate this run, so israel_train/val/test.txt can never
-    # reference a basin with no processed CSV on disk.
-    included_basins = [r['gauge_id'] for r in availability_records if not r['excluded']]
+    # reference a basin with no processed CSV on disk. Membership per split is
+    # decided inside create_basin_splits from each basin's own per-split
+    # combined_availability_pct - a basin may appear in multiple lists, or none.
+    included_records = [r for r in availability_records if not r['excluded']]
     basin_lists_dir = os.path.dirname(config['train_basin_file'])
-    bs.create_basin_splits(included_basins, basin_lists_dir, config.get('seed', 42))
+    bs.create_basin_splits(included_records, basin_lists_dir, config['min_combined_availability_pct'])
 
 if __name__ == "__main__":
     CONFIG_PATH = "configs/config.yml"

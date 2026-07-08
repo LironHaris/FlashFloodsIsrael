@@ -7,17 +7,22 @@
 #SBATCH --mem=32G
 #SBATCH --time=24:00:00
 
-# 1. טעינת ה-Conda של המעבדה והפעלת הסביבה
+# 1. ן¿½ן¿½ן¿½ן¿½ן¿½ ן¿½-Conda ן¿½ן¿½ ן¿½ן¿½ן¿½ן¿½ן¿½ן¿½ ן¿½ן¿½ן¿½ן¿½ן¿½ן¿½ ן¿½ן¿½ן¿½ן¿½ן¿½ן¿½
 source /sci/labs/efratmorin/liron.haris/miniconda3/etc/profile.d/conda.sh
 conda activate flashfloods
 
-# 2. מעקפי בעיית הדיסק המלא במדעי המחשב
+# 2. ן¿½ן¿½ן¿½ן¿½ן¿½ ן¿½ן¿½ן¿½ן¿½ן¿½ ן¿½ן¿½ן¿½ן¿½ן¿½ ן¿½ן¿½ן¿½ן¿½ ן¿½ן¿½ן¿½ן¿½ן¿½ ן¿½ן¿½ן¿½ן¿½ן¿½
 export HOME=/sci/labs/efratmorin/liron.haris/
 export MPLCONFIGDIR=/sci/labs/efratmorin/liron.haris/.matplotlib_cache
 
-# 3. מעבר לתיקיית הפרויקט
+# 3. ן¿½ן¿½ן¿½ן¿½ ן¿½ן¿½ן¿½ן¿½ן¿½ן¿½ן¿½ ן¿½ן¿½ן¿½ן¿½ן¿½ן¿½ן¿½
 cd /sci/labs/efratmorin/liron.haris/FlashFloodsIsrael
 
-# 4. הרצת ה-Agent (כל ריצה להחליף את ה ID שבסוף הכתובת)
-wandb agent liron-haris-hebrew-university-of-jerusalem/flash-floods-israel/4ey73tda
+# 4. SWEEP_ID is required (from `wandb sweep configs/sweep.yaml`); CONFIG_PATH picks
+# which model's config each trial sweeps (defaults to configs/config.yml).
+SWEEP_ID="${1:?Usage: sbatch run_sweep.sh <sweep_id> [config_path]}"
+export FLASHFLOODS_CONFIG="${2:-configs/config.yml}"
+
+# 5. ן¿½ן¿½ן¿½ן¿½ ן¿½-Agent
+wandb agent liron-haris-hebrew-university-of-jerusalem/flash-floods-israel/$SWEEP_ID
 

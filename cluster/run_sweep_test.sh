@@ -7,14 +7,17 @@
 #SBATCH --mem=32G
 #SBATCH --time=06:00:00
 
-# 1. θςιπϊ δραιαδ
+# 1. οΏ½οΏ½οΏ½οΏ½οΏ½ οΏ½οΏ½οΏ½οΏ½οΏ½οΏ½
 source /sci/labs/efratmorin/liron.haris/miniconda3/etc/profile.d/conda.sh
 conda activate flashfloods
 
-# 2. ξςχτι γιρχ
+# 2. οΏ½οΏ½οΏ½οΏ½οΏ½ οΏ½οΏ½οΏ½οΏ½
 export HOME=/sci/labs/efratmorin/liron.haris/
 export MPLCONFIGDIR=/sci/labs/efratmorin/liron.haris/.matplotlib_cache
 cd /sci/labs/efratmorin/liron.haris/FlashFloodsIsrael
 
-# 3. δψφϊ δπιϊεη (ϊημισ μ-ID ωμ δ-Sweep ωμκ)
-python src/test_sweep.py 4ey73tda --top 3
+# 3. οΏ½οΏ½οΏ½οΏ½ οΏ½οΏ½οΏ½οΏ½οΏ½οΏ½ (SWEEP_ID οΏ½οΏ½οΏ½οΏ½οΏ½, TOP_N/CONFIG_PATH οΏ½οΏ½οΏ½οΏ½οΏ½οΏ½οΏ½οΏ½)
+SWEEP_ID="${1:?Usage: sbatch run_sweep_test.sh <sweep_id> [top_n] [config_path]}"
+TOP_N="${2:-3}"
+CONFIG_PATH="${3:-configs/config.yml}"
+python src/test_sweep.py "$SWEEP_ID" --top "$TOP_N" --config "$CONFIG_PATH"

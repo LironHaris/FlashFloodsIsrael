@@ -49,7 +49,12 @@ def is_below_top_k(project, sweep_id, current_run_id, best_val_loss_so_far, top_
 
 
 def run_trial():
-    base_config = load_config("configs/config.yml")
+    # wandb agent spawns each trial as a fresh `python src/run_sweep.py` process with
+    # no extra CLI args (hyperparameters arrive via wandb.config, not argv), so the base
+    # config to sweep can't be passed as a normal --config flag - it's set once via
+    # FLASHFLOODS_CONFIG before starting `wandb agent` (see cluster/run_sweep.sh).
+    base_config_path = os.environ.get('FLASHFLOODS_CONFIG', 'configs/config.yml')
+    base_config = load_config(base_config_path)
     sweep_config = load_config("configs/sweep.yaml")
 
     api_key = base_config.get('wandb_api_key')
