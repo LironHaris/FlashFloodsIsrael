@@ -267,7 +267,7 @@ cumulative_rain_windows:
 # and hourly_precipitation are non-NaN, required for a basin to be used at all. Basins
 # below this are excluded from training/val/test entirely (no processed CSV is written),
 # though they still get a flagged row in the availability report for auditing.
-min_combined_availability_pct: 50
+min_combined_availability_pct: 48
 
 # Per-dynamic-input NaN tolerance: the max % of a window's timesteps that
 # may be NaN for that feature before the window is excluded outright. Below
