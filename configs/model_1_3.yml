@@ -281,7 +281,19 @@ min_combined_availability_pct: 48
 # train_max_nan_pct=0/eval_max_nan_pct=0 (today's "any NaN excludes"
 # behavior, for both train and val/test). See configs/model_0.yml for an
 # example entry raising eval_max_nan_pct.
-dynamic_input_nan_tolerance: {}
+dynamic_input_nan_tolerance:
+  hourly_precipitation:
+    train_max_nan_pct: 0
+    eval_max_nan_pct: 100
+  rain_cum_1week:
+    train_max_nan_pct: 10
+    eval_max_nan_pct: 100
+  rain_cum_4weeks:
+    train_max_nan_pct: 20
+    eval_max_nan_pct: 100
+  rain_cum_8weeks:
+    train_max_nan_pct: 30
+    eval_max_nan_pct: 100
 
 generic_data_config:
   time_series_path: processed/timeseries/
