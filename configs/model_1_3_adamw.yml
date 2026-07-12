@@ -6,7 +6,7 @@
 
 
 # experiment name, used as folder name
-experiment_name: model_1_2
+experiment_name: model_1_3_adamw
 
 # --- Weights & Biases ---
 use_wandb: true
@@ -168,7 +168,7 @@ output_dropout: 0.4
 # --- Training configuration -----------------------------------------------------------------------
 
 # specify optimizer [Adam, AdamW]
-optimizer: Adam
+optimizer: AdamW
 
 # specify loss [MSE, NSE, RMSE]
 loss: MSE
@@ -265,6 +265,8 @@ cumulative_rain_windows:
     hours: 168
   - name: rain_cum_4weeks
     hours: 672
+  - name: rain_cum_8weeks
+    hours: 1344
 
 # Minimum % of hours (from basin_start_date through END_DATE) where BOTH Flow_m3_sec
 # and hourly_precipitation are non-NaN, required for a basin to be used at all. Basins
@@ -288,6 +290,9 @@ dynamic_input_nan_tolerance:
     eval_max_nan_pct: 100
   rain_cum_4weeks:
     train_max_nan_pct: 20
+    eval_max_nan_pct: 100
+  rain_cum_8weeks:
+    train_max_nan_pct: 30
     eval_max_nan_pct: 100
 
 generic_data_config:
@@ -316,6 +321,7 @@ dynamic_inputs:
 - hourly_precipitation
 - rain_cum_1week
 - rain_cum_4weeks
+- rain_cum_8weeks
 
 # which columns to use as target
 target_variables:
@@ -482,4 +488,4 @@ plot_hydrographs:
   end_time: "2022-01-16 16:00:00"
 
 # --- Regularization settings ---
-weight_decay :
+weight_decay: 0.01

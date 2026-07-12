@@ -17,7 +17,6 @@ import os
 import sys
 import yaml
 import torch
-import torch.optim as optim
 import wandb
 
 # Ensure src/ is on the path when called directly by the W&B agent
@@ -25,7 +24,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from model import EALSTMModel
 from dataset import get_dataloader
-from train import set_seed, train_epoch, validate_epoch, get_loss_criterion, get_tracked_hparams
+from train import set_seed, train_epoch, validate_epoch, get_loss_criterion, get_tracked_hparams, get_optimizer
 
 
 def load_config(yaml_path):
@@ -95,7 +94,7 @@ def run_trial():
     criterion = get_loss_criterion(loss_setting, config)
 
     sweep_lr = float(config['learning_rate'])
-    optimizer = optim.Adam(model.parameters(), lr=sweep_lr)
+    optimizer = get_optimizer(config, model, sweep_lr)
 
     best_val_loss = float('inf')
     epochs = config.get('epochs', 30)

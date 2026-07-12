@@ -6,7 +6,7 @@
 
 
 # experiment name, used as folder name
-experiment_name: model_1_2
+experiment_name: model_0_adamw
 
 # --- Weights & Biases ---
 use_wandb: true
@@ -168,7 +168,7 @@ output_dropout: 0.4
 # --- Training configuration -----------------------------------------------------------------------
 
 # specify optimizer [Adam, AdamW]
-optimizer: Adam
+optimizer: AdamW
 
 # specify loss [MSE, NSE, RMSE]
 loss: MSE
@@ -261,10 +261,7 @@ availability_report_file: ./data/processed/data_availability_report.csv
 # entries freely; the pipeline loops over this list and is not hardcoded to any count.
 # NOTE: keep 'name' values in sync with dynamic_inputs below - not auto-enforced.
 cumulative_rain_windows:
-  - name: rain_cum_1week
-    hours: 168
-  - name: rain_cum_4weeks
-    hours: 672
+  
 
 # Minimum % of hours (from basin_start_date through END_DATE) where BOTH Flow_m3_sec
 # and hourly_precipitation are non-NaN, required for a basin to be used at all. Basins
@@ -272,22 +269,18 @@ cumulative_rain_windows:
 # though they still get a flagged row in the availability report for auditing.
 min_combined_availability_pct: 48
 
-# Per-dynamic-input NaN tolerance: the max % of a window's timesteps that may
-# be NaN for that feature before the window is excluded outright. Below the
-# threshold, the window is kept and NaNs in that feature are imputed as
-# literal zero rainfall. Keys not listed here default to
-# train_max_nan_pct=0/eval_max_nan_pct=0 (today's "any NaN excludes"
-# behavior, for both train and val/test). See configs/model_0.yml for an
-# example entry raising eval_max_nan_pct.
+# Per-dynamic-input NaN tolerance: the max % of a window's timesteps that
+# may be NaN for that feature before the window is excluded outright. Below
+# the threshold, the window is kept and NaNs in that feature are imputed as
+# literal zero rainfall. train_max_nan_pct=0 everywhere reproduces today's
+# exact "any NaN excludes" behavior for training (never fabricate training
+# data). eval_max_nan_pct is the val/test tolerance - set higher to keep
+# more real-world-realistic (including flood-adjacent) windows in
+# evaluation instead of only scoring on the cleanest data. A feature with no
+# entry here defaults to 0/0 (today's behavior, unchanged).
 dynamic_input_nan_tolerance:
   hourly_precipitation:
     train_max_nan_pct: 0
-    eval_max_nan_pct: 100
-  rain_cum_1week:
-    train_max_nan_pct: 10
-    eval_max_nan_pct: 100
-  rain_cum_4weeks:
-    train_max_nan_pct: 20
     eval_max_nan_pct: 100
 
 generic_data_config:
@@ -314,8 +307,6 @@ forcings: maurer_extended
 #     - total_precipitation_nldas_hourly
 dynamic_inputs:
 - hourly_precipitation
-- rain_cum_1week
-- rain_cum_4weeks
 
 # which columns to use as target
 target_variables:
@@ -482,4 +473,4 @@ plot_hydrographs:
   end_time: "2022-01-16 16:00:00"
 
 # --- Regularization settings ---
-weight_decay :
+weight_decay: 0.01

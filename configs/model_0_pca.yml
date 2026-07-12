@@ -6,7 +6,7 @@
 
 
 # experiment name, used as folder name
-experiment_name: model_1_2
+experiment_name: model_0_pca
 
 # --- Weights & Biases ---
 use_wandb: true
@@ -246,7 +246,7 @@ raw_static_dir: ./data/raw/static
 static_attributes_file: data/processed/static/static_attributes_nh.csv
 processed_static_dir: ./data/processed/static
 feature_stats_file: ./data/processed/static/feature_statistics.csv
-normalized_static_attributes_file: ./data/processed/static/static_attributes_normalized.csv
+normalized_static_attributes_file: ./data/processed/pca_results/pca_projected_data.csv
 
 raw_dynamic_dir: ./data/raw/dynamic
 processed_timeseries_dir: ./data/processed/timeseries
@@ -261,10 +261,7 @@ availability_report_file: ./data/processed/data_availability_report.csv
 # entries freely; the pipeline loops over this list and is not hardcoded to any count.
 # NOTE: keep 'name' values in sync with dynamic_inputs below - not auto-enforced.
 cumulative_rain_windows:
-  - name: rain_cum_1week
-    hours: 168
-  - name: rain_cum_4weeks
-    hours: 672
+  
 
 # Minimum % of hours (from basin_start_date through END_DATE) where BOTH Flow_m3_sec
 # and hourly_precipitation are non-NaN, required for a basin to be used at all. Basins
@@ -272,22 +269,18 @@ cumulative_rain_windows:
 # though they still get a flagged row in the availability report for auditing.
 min_combined_availability_pct: 48
 
-# Per-dynamic-input NaN tolerance: the max % of a window's timesteps that may
-# be NaN for that feature before the window is excluded outright. Below the
-# threshold, the window is kept and NaNs in that feature are imputed as
-# literal zero rainfall. Keys not listed here default to
-# train_max_nan_pct=0/eval_max_nan_pct=0 (today's "any NaN excludes"
-# behavior, for both train and val/test). See configs/model_0.yml for an
-# example entry raising eval_max_nan_pct.
+# Per-dynamic-input NaN tolerance: the max % of a window's timesteps that
+# may be NaN for that feature before the window is excluded outright. Below
+# the threshold, the window is kept and NaNs in that feature are imputed as
+# literal zero rainfall. train_max_nan_pct=0 everywhere reproduces today's
+# exact "any NaN excludes" behavior for training (never fabricate training
+# data). eval_max_nan_pct is the val/test tolerance - set higher to keep
+# more real-world-realistic (including flood-adjacent) windows in
+# evaluation instead of only scoring on the cleanest data. A feature with no
+# entry here defaults to 0/0 (today's behavior, unchanged).
 dynamic_input_nan_tolerance:
   hourly_precipitation:
     train_max_nan_pct: 0
-    eval_max_nan_pct: 100
-  rain_cum_1week:
-    train_max_nan_pct: 10
-    eval_max_nan_pct: 100
-  rain_cum_4weeks:
-    train_max_nan_pct: 20
     eval_max_nan_pct: 100
 
 generic_data_config:
@@ -314,8 +307,6 @@ forcings: maurer_extended
 #     - total_precipitation_nldas_hourly
 dynamic_inputs:
 - hourly_precipitation
-- rain_cum_1week
-- rain_cum_4weeks
 
 # which columns to use as target
 target_variables:
@@ -325,116 +316,27 @@ target_variables:
 clip_targets_to_zero:
 - Flow_m3_sec
 
-# Which CAMELS attributes to use. Leave empty if none should be used
+# PCA-projected components (from src/analyze_static_features.py) used in place
+# of the named CAMELS attributes, for comparing PCA-reduced vs. full static
+# attribute sets. Must match pca_projected_data.csv's PC columns exactly.
 static_attributes:
-- cmi_ix_s02           # climate moisture index per month
-- glc_pc_s20           # land cover extent classes
-- lka_pc_sse           # lake area
-- glc_pc_s22           # land cover extent classes
-- pnv_pc_s10           # potential natural vegitation - % extent of class
-- glc_pc_s15           # land cover extent classes
-- cmi_ix_s12           # climate moisture index per month
-- cmi_ix_s01           # climate moisture index per month
-- pnv_pc_s11           # potential natural vegitation - % extent of class
-- ele_mt_smn           # elevation in sub-basin - min
-- pnv_pc_s14           # potential natural vegitation - % extent of class
-- cmi_ix_s11           # climate moisture index per month
-- riv_tc_usu           # river volume upstream
-- area                 # basin area
-- glc_pc_s14           # land cover extent classes
-- dis_m3_pmn           # annual discharge - min
-- glc_pc_s19           # land cover extent classes
-- for_pc_sse           # forest cover extent
-- glc_pc_s03           # land cover extent classes
-- pre_mm_s09           # precipitation
-- inu_pc_smn           # annual inundation extent - mean annual minimum
-- dis_m3_pyr           # annual discharge - average
-- ero_kh_sav           # soil erosion
-- glc_pc_s18           # land cover extent classes
-- pnv_pc_s12           # potential natural vegitation - % extent of class
-- dis_m3_pmx           # annual discharge - max
-- pnv_pc_s09           # potential natural vegitation - % extent of class
-- glc_pc_s16           # land cover extent classes
-- urb_pc_sse           # urban extent %
-- cmi_ix_s03           # climate moisture index per month
-- glc_pc_s12           # land cover extent classes
-- pre_mm_s05           # precipitation
-- inu_pc_smx           # annual inundation extent - mean annual maximum
-- crp_pc_sse           # cropland extent %
-- rdd_mk_sav           # road density
-- sgr_dk_sav           # stream gradient
-- swc_pc_s10           # soil water content % - monthly
-- pst_pc_sse           # pasture extent %
-- swc_pc_s09           # soil water content % - monthly
-- pre_mm_s04           # precipitation
-- aet_mm_s10           # actual evapotranspiration - monthly
-- aet_mm_s09           # actual evapotranspiration - monthly
-- ari_ix_sav           # aridity index
-- swc_pc_s11           # soil water content % - monthly
-- pre_mm_s10           # precipitation
-- p_mean               # mean daily precipitation
-- low_prec_dur         # Average duration of low precipitation events
-- ele_mt_sav           # elevation in sub-basin - average
-- swc_pc_s12           # soil water content % - monthly
-- pre_mm_s01           # precipitation
-- aet_mm_s11           # actual evapotranspiration - monthly
-- pre_mm_s02           # precipitation
-- swc_pc_s05           # soil water content % - monthly
-- kar_pc_sse           # karst area extent
-- swc_pc_syr           # soil water content % - annual
-- seasonality          # Moisture index seasonality in range [0, 2], where 0 indicates no changes in the water/energy budget throughout the year and 2 indicates a change from fully arid to fully humid
-- pre_mm_syr           # precipitation
-- pre_mm_s12           # precipitation
-- swc_pc_s01           # soil water content % - monthly
-- aet_mm_s12           # actual evapotranspiration - monthly
-- swc_pc_s02           # soil water content % - monthly
-- run_mm_syr           # land surface runoff
-- pre_mm_s11           # precipitation
-- swc_pc_s04           # soil water content % - monthly
-- swc_pc_s03           # soil water content % - monthly
-- pre_mm_s03           # precipitation
-- aet_mm_s05           # actual evapotranspiration - monthly
-- aet_mm_syr           # actual evapotranspiration - annual
-- aet_mm_s01           # actual evapotranspiration - monthly
-- ele_mt_smx           # elevation in sub-basin - max
-- aet_mm_s02           # actual evapotranspiration - monthly
-- aet_mm_s04           # actual evapotranspiration - monthly
-- aet_mm_s03           # actual evapotranspiration - monthly
-- slp_dg_sav           # terrain slope
-- hft_ix_s09           # human footprint index (2009)
-- gwt_cm_sav           # groundwater table depth
-- cmi_ix_syr           # climate moisture index - annual
-- moisture_index       # moisture index
-- pet_mean             # potential evapotranspiration
-- tmp_dc_s01           # air temperature - monthly
-#- cly_pc_sav           # clay fraction in soil %
-- tmp_dc_s02           # air temperature - monthly
-- cmi_ix_s04           # climate moisture index per month
-- high_prec_freq       # Frequency of high precipitation days, where precipitation ≥5 times mean daily precipitation
-- pet_mm_s01           # potential evapotranspiration - monthly
-- tmp_dc_s03           # air temperature - monthly
-- tmp_dc_s12           # air temperature - monthly
-- pet_mm_s02           # potential evapotranspiration - monthly
-- pet_mm_s12           # potential evapotranspiration - monthly
-- pet_mm_s03           # potential evapotranspiration - monthly
-- tmp_dc_s04           # air temperature - monthly
-- pet_mm_s11           # potential evapotranspiration - monthly
-#- snd_pc_sav           # sand fraction in soil
-- tmp_dc_s11           # air temperature - monthly
-- cmi_ix_s10           # climate moisture index per month
-- pet_mm_s04           # potential evapotranspiration - monthly
-- pet_mm_syr           # potential evapotranspiration - annual mean
-- tmp_dc_syr           # air temperature - yearly average
-- pet_mm_s05           # potential evapotranspiration - monthly
-- tmp_dc_s05           # air temperature - monthly
-- pet_mm_s10           # potential evapotranspiration - monthly
-- pet_mm_s09           # potential evapotranspiration - monthly
-- low_prec_freq        # Frequency of low precipitation days, where precipitation
-- tmp_dc_s10           # air temperature - monthly
-- tmp_dc_s09           # air temperature - monthly
-- cmi_ix_s05           # climate moisture index per month
-- high_prec_dur        # Average duration of high precipitation events (number of consecutive days where precipitation ≥5 times mean daily precipitation
-- cmi_ix_s09           # climate moisture index per month
+- PC1
+- PC2
+- PC3
+- PC4
+- PC5
+- PC6
+- PC7
+- PC8
+- PC9
+- PC10
+- PC11
+- PC12
+- PC13
+- PC14
+- PC15
+- PC16
+- PC17
 
 # Path to pickle file(s) containing additional data. Each pickle file must contain a dictionary
 # with one key for each basin and the value is a time indexed data frame, where each column is a 

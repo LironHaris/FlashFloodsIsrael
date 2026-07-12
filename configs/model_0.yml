@@ -167,7 +167,7 @@ output_dropout: 0.4
 
 # --- Training configuration -----------------------------------------------------------------------
 
-# specify optimizer [Adam]
+# specify optimizer [Adam, AdamW]
 optimizer: Adam
 
 # specify loss [MSE, NSE, RMSE]

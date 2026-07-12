@@ -34,12 +34,30 @@ def get_tracked_hparams(config):
         'batch_size', 'epochs', 'seed',
         'target_noise_std', 'clip_gradient_norm',
         'seq_length', 'forecast_lead_times', 'use_basin_splits',
+        'optimizer', 'weight_decay',
     ]
     tracked = {k: config[k] for k in keys if k in config}
     tracked['num_static_attributes'] = len(config.get('static_attributes', []))
     tracked['num_dynamic_inputs']    = len(config.get('dynamic_inputs', []))
     tracked['statics_embedding_type'] = config.get('statics_embedding', {}).get('type')
     return tracked
+
+
+def get_optimizer(config, model, lr):
+    """
+    Construct the optimizer specified by config['optimizer'] (default 'Adam').
+    weight_decay (if set) is passed identically to both - only their
+    weight-decay update rule differs: Adam folds it into the gradient
+    (L2 regularization), AdamW decouples it from the gradient-based update
+    (Loshchilov & Hutter, 2019).
+    """
+    optimizer_name = config.get('optimizer', 'Adam')
+    weight_decay = config.get('weight_decay') or 0.0
+    if optimizer_name == 'Adam':
+        return optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+    elif optimizer_name == 'AdamW':
+        return optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+    raise ValueError(f"Unsupported optimizer '{optimizer_name}'. Supported: Adam, AdamW.")
 
 
 def set_seed(seed):
@@ -194,7 +212,7 @@ def main(config_path="configs/config.yml"):
     print(f"[INFO] Optimization criterion set to: {loss_setting}")
     
     initial_lr = float(config['learning_rate'])
-    optimizer = optim.Adam(model.parameters(), lr=initial_lr)
+    optimizer = get_optimizer(config, model, initial_lr)
 
     # Resume from a checkpoint if one is configured (model + optimizer state both restored)
     start_epoch = 0
