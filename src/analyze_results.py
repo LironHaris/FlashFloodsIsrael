@@ -103,13 +103,38 @@ def load_static_feature_values(feature_name, config):
     raise ValueError(f"Static feature '{feature_name}' not found. Checked: {details}")
 
 
+def _build_nse_scatter_figure(basins, nse_vals, feature_vals, static_feature, lead, subtitle, config):
+    fig, ax = plt.subplots(figsize=(12, 6.5), dpi=150, facecolor="#fafafa")
+    ax.set_facecolor("#ffffff")
+
+    scatter = ax.scatter(range(len(basins)), nse_vals, c=feature_vals, cmap='viridis',
+                          s=60, edgecolors='#1e1e1e', linewidths=0.5, zorder=3)
+
+    ax.set_xticks(range(len(basins)))
+    ax.set_xticklabels(basins, rotation=90, fontsize=8)
+    ax.set_xlabel("Basin ID")
+    ax.set_ylabel(f"NSE (lead {lead}h)")
+    ax.set_title(f"{config.get('experiment_name', '')}: NSE by Basin ({subtitle}), colored by '{static_feature}'")
+    ax.grid(True, axis='y', linestyle='--', alpha=0.4, zorder=0)
+
+    cbar = fig.colorbar(scatter, ax=ax)
+    cbar.set_label(static_feature)
+
+    fig.tight_layout()
+    return fig
+
+
 def plot_nse_by_static_feature(config, basin_ids=None):
     """
-    Scatter plot per static feature x per forecast lead time: x = basin ID,
-    y = NSE, point color = the static feature's raw value. Static features
-    come from config['nse_scatter_static_features']. Saves to
-    {exp_dir}/analysis_plots/nse_by_basin_{static_feature}_lead{lead}h.png
-    for each (feature, lead) pair. Returns a {feature: {lead: fig}} dict.
+    Scatter plot per static feature x per forecast lead time x NSE sign:
+    x = basin ID, y = NSE, point color = the static feature's raw value.
+    Each (feature, lead) pair produces two figures - one for basins with
+    negative NSE, one for the rest (NSE >= 0) - so a handful of badly
+    negative basins don't compress the y-axis for the well-performing ones.
+    Static features come from config['nse_scatter_static_features']. Saves to
+    {exp_dir}/analysis_plots/nse_by_basin_{static_feature}_lead{lead}h_{negative|nonnegative}.png
+    Returns a {feature: {lead: {'negative': fig, 'nonnegative': fig}}} dict
+    (a group key is absent if that group had no basins to plot).
     """
     exp_dir = _get_exp_dir(config)
 
@@ -144,29 +169,35 @@ def plot_nse_by_static_feature(config, basin_ids=None):
                       f"'{static_feature}' value. Skipping.")
                 continue
 
-            fig, ax = plt.subplots(figsize=(12, 6.5), dpi=150, facecolor="#fafafa")
-            ax.set_facecolor("#ffffff")
+            groups = [
+                ('negative', 'NSE < 0'),
+                ('nonnegative', 'NSE ≥ 0'),
+            ]
+            group_figs = {}
+            for group_key, subtitle in groups:
+                if group_key == 'negative':
+                    idxs = [i for i, v in enumerate(nse_vals) if v < 0]
+                else:
+                    idxs = [i for i, v in enumerate(nse_vals) if v >= 0]
 
-            scatter = ax.scatter(range(len(basins)), nse_vals, c=feature_vals, cmap='viridis',
-                                  s=60, edgecolors='#1e1e1e', linewidths=0.5, zorder=3)
+                if not idxs:
+                    print(f"[Warning] Lead {lead}h, '{static_feature}': no basins with {subtitle}. Skipping.")
+                    continue
 
-            ax.set_xticks(range(len(basins)))
-            ax.set_xticklabels(basins, rotation=90, fontsize=8)
-            ax.set_xlabel("Basin ID")
-            ax.set_ylabel(f"NSE (lead {lead}h)")
-            ax.set_title(f"{config.get('experiment_name', '')}: NSE by Basin, colored by '{static_feature}'")
-            ax.grid(True, axis='y', linestyle='--', alpha=0.4, zorder=0)
+                group_basins = [basins[i] for i in idxs]
+                group_nse = [nse_vals[i] for i in idxs]
+                group_feat = [feature_vals[i] for i in idxs]
 
-            cbar = fig.colorbar(scatter, ax=ax)
-            cbar.set_label(static_feature)
+                fig = _build_nse_scatter_figure(group_basins, group_nse, group_feat,
+                                                 static_feature, lead, subtitle, config)
 
-            fig.tight_layout()
+                filename = f"nse_by_basin_{static_feature}_lead{lead}h_{group_key}.png"
+                out_path = _save_figure(fig, exp_dir, filename)
+                print(f"[INFO] Saved scatter plot to: {out_path}")
 
-            filename = f"nse_by_basin_{static_feature}_lead{lead}h.png"
-            out_path = _save_figure(fig, exp_dir, filename)
-            print(f"[INFO] Saved scatter plot to: {out_path}")
+                group_figs[group_key] = fig
 
-            figs[lead] = fig
+            figs[lead] = group_figs
 
         all_figs[static_feature] = figs
 
@@ -292,10 +323,11 @@ def main(config=None, analysis=None, basin_ids=None):
         figs = plot_nse_by_static_feature(config, basin_ids=basin_ids)
         if use_wandb:
             for static_feature, lead_figs in figs.items():
-                for lead, fig in lead_figs.items():
-                    key = f"analyze_results/scatter/{static_feature}/lead_{lead}h"
-                    wandb.log({key: wandb.Image(fig)})
-                    plt.close(fig)
+                for lead, group_figs in lead_figs.items():
+                    for group_key, fig in group_figs.items():
+                        key = f"analyze_results/scatter/{static_feature}/lead_{lead}h_{group_key}"
+                        wandb.log({key: wandb.Image(fig)})
+                        plt.close(fig)
     elif analysis == 'classification':
         result = compute_classification_metrics_by_lead(config, basin_ids=basin_ids)
         if use_wandb and result is not None:
