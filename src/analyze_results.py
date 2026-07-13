@@ -13,7 +13,7 @@ import re
 import yaml
 import numpy as np
 import pandas as pd
-import plotly.express as px
+import matplotlib.pyplot as plt
 
 try:
     import wandb
@@ -34,11 +34,11 @@ def _get_exp_dir(config):
 
 
 def _save_figure(fig, exp_dir, filename):
-    """Save a Plotly figure into {exp_dir}/analysis_plots/ and return the output path."""
+    """Save a figure into {exp_dir}/analysis_plots/ and return the output path."""
     plots_dir = os.path.join(exp_dir, "analysis_plots")
     os.makedirs(plots_dir, exist_ok=True)
     out_path = os.path.join(plots_dir, filename)
-    fig.write_html(out_path)
+    fig.savefig(out_path, facecolor=fig.get_facecolor())
     return out_path
 
 
@@ -103,30 +103,32 @@ def load_static_feature_values(feature_name, config):
     raise ValueError(f"Static feature '{feature_name}' not found. Checked: {details}")
 
 
-def _build_nse_scatter_figure(basins, nse_vals, feature_vals, static_feature, lead, subtitle, config):
-    """Interactive Plotly scatter: x = static feature value, y = NSE,
-    hovering a point reveals its basin ID."""
-    df = pd.DataFrame({'basin_id': basins, static_feature: feature_vals, 'nse': nse_vals})
-    fig = px.scatter(
-        df, x=static_feature, y='nse', hover_name='basin_id',
-        title=f"{config.get('experiment_name', '')}: NSE vs '{static_feature}' ({subtitle}), lead {lead}h",
-        labels={'nse': f'NSE (lead {lead}h)'},
-        template='plotly_white',
-    )
-    fig.update_traces(marker=dict(size=10, color='#2b8cbe', line=dict(width=1, color='#1e1e1e')))
+def _build_nse_scatter_figure(nse_vals, feature_vals, static_feature, lead, subtitle, config):
+    """Static matplotlib scatter: x = static feature value, y = NSE."""
+    fig, ax = plt.subplots(figsize=(12, 6.5), dpi=150, facecolor="#fafafa")
+    ax.set_facecolor("#ffffff")
+
+    ax.scatter(feature_vals, nse_vals, s=60, color='#2b8cbe',
+               edgecolors='#1e1e1e', linewidths=0.5, zorder=3)
+
+    ax.set_xlabel(static_feature)
+    ax.set_ylabel(f"NSE (lead {lead}h)")
+    ax.set_title(f"{config.get('experiment_name', '')}: NSE vs '{static_feature}' ({subtitle}), lead {lead}h")
+    ax.grid(True, linestyle='--', alpha=0.4, zorder=0)
+
+    fig.tight_layout()
     return fig
 
 
 def plot_nse_by_static_feature(config, basin_ids=None):
     """
-    Interactive scatter plot per static feature x per forecast lead time x
-    NSE sign: x = the static feature's value, y = NSE, hovering a point
-    reveals its basin ID. Each (feature, lead) pair produces two figures -
-    one for basins with negative NSE, one for the rest (NSE >= 0) - so a
-    handful of badly negative basins don't compress the y-axis for the
-    well-performing ones. Static features come from
+    Scatter plot per static feature x per forecast lead time x NSE sign:
+    x = the static feature's value, y = NSE. Each (feature, lead) pair
+    produces two figures - one for basins with negative NSE, one for the
+    rest (NSE >= 0) - so a handful of badly negative basins don't compress
+    the y-axis for the well-performing ones. Static features come from
     config['nse_scatter_static_features']. Saves to
-    {exp_dir}/analysis_plots/nse_vs_{static_feature}_lead{lead}h_{negative|nonnegative}.html
+    {exp_dir}/analysis_plots/nse_vs_{static_feature}_lead{lead}h_{negative|nonnegative}.png
     Returns a {feature: {lead: {'negative': fig, 'nonnegative': fig}}} dict
     (a group key is absent if that group had no basins to plot).
     """
@@ -178,14 +180,13 @@ def plot_nse_by_static_feature(config, basin_ids=None):
                     print(f"[Warning] Lead {lead}h, '{static_feature}': no basins with {subtitle}. Skipping.")
                     continue
 
-                group_basins = [basins[i] for i in idxs]
                 group_nse = [nse_vals[i] for i in idxs]
                 group_feat = [feature_vals[i] for i in idxs]
 
-                fig = _build_nse_scatter_figure(group_basins, group_nse, group_feat,
+                fig = _build_nse_scatter_figure(group_nse, group_feat,
                                                  static_feature, lead, subtitle, config)
 
-                filename = f"nse_vs_{static_feature}_lead{lead}h_{group_key}.html"
+                filename = f"nse_vs_{static_feature}_lead{lead}h_{group_key}.png"
                 out_path = _save_figure(fig, exp_dir, filename)
                 print(f"[INFO] Saved scatter plot to: {out_path}")
 
@@ -326,7 +327,8 @@ def main(config=None, basin_ids=None):
             for lead, group_figs in lead_figs.items():
                 for group_key, fig in group_figs.items():
                     key = f"analyze_results/scatter/{static_feature}/lead_{lead}h_{group_key}"
-                    wandb.log({key: fig})
+                    wandb.log({key: wandb.Image(fig)})
+                    plt.close(fig)
 
     result = compute_classification_metrics_by_lead(config, basin_ids=basin_ids)
     if use_wandb and result is not None:
