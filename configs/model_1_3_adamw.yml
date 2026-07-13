@@ -77,7 +77,7 @@ metrics:
 model: ealstm
 
 # path to weight file that should be used as initial weights. Leave empty to start from random weights
-checkpoint_path:
+checkpoint_path: /sci/labs/efratmorin/liron.haris/FlashFloodsIsrael/runs/model_1_3_adamw/best_model.pt
 
 # prediction head [regression]. Define the head specific parameters below
 head: regression
@@ -486,6 +486,15 @@ plot_hydrographs:
   basin_id: "il_04"
   start_time: "2022-01-16 04:00:00"
   end_time: "2022-01-16 16:00:00"
+
+# --- Results Analysis Settings (analyze_results.py) ---
+# Static attribute(s) to color analyze_results.py's NSE-by-basin scatter plot by;
+# one plot is produced per feature per forecast lead time. Looked up first in
+# static_attributes_file, then normalized_static_attributes_file (so PCA
+# components like PC1/PC2 resolve correctly for model_0_pca.yml).
+nse_scatter_static_features:
+- area
+- ari_ix_sav
 
 # --- Regularization settings ---
 weight_decay: 0.01

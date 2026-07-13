@@ -63,9 +63,7 @@ def _build_hydrograph_figure(plot_df, title, config, rp_filter=None, hourly_xtic
                     linestyle=LEAD_STYLES.get(lead, '-'),
                     linewidth=1.4, alpha=0.85, label=f'+{lead}h Lead')
 
-    # Threshold lines + compact hit-rate summary (longest lead = most warning value)
-    longest_lead = max(active_leads) if active_leads else None
-    hit_rate_lines = []
+    # Threshold lines
     for rp in rp_years:
         thresh_col = f"threshold_{rp}yr_rp"
         if thresh_col in plot_df.columns:
@@ -74,19 +72,6 @@ def _build_hydrograph_figure(plot_df, title, config, rp_filter=None, hourly_xtic
                 ax.axhline(y=thresh_val, color=THRESHOLD_COLORS.get(rp, '#d9d9d9'),
                            linestyle='-.', linewidth=2.2, alpha=1.0,
                            label=f'{rp}yr RP ({thresh_val:.1f} m³/s)')
-
-                count_col = f"hit_rate_pred_lead_{longest_lead}h_{rp}yr_count"
-                score_col = f"hit_rate_pred_lead_{longest_lead}h_{rp}yr_score"
-                if count_col in plot_df.columns:
-                    cnt_str = plot_df[count_col].iloc[0]
-                    score = float(plot_df[score_col].iloc[0]) * 100
-                    hit_rate_lines.append(f"{rp}yr RP (+{longest_lead}h): {cnt_str} ({score:.1f}%)")
-
-    if hit_rate_lines:
-        box_text = "Hit Rates:\n" + "\n".join(hit_rate_lines)
-        ax.text(0.02, 0.97, box_text, transform=ax.transAxes, fontsize=8.5,
-                verticalalignment='top', fontfamily='monospace', color='#2c3e50',
-                bbox=dict(boxstyle='round,pad=0.4', facecolor='#f8f9fa', edgecolor='#dddddd', alpha=0.9))
 
     ax.set_title(title, fontsize=12, fontweight='bold', pad=15, color='#2c3e50')
     ax.set_xlabel('Time', fontsize=10.5, labelpad=8)

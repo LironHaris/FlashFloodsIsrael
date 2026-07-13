@@ -11,6 +11,12 @@ Each call by the sweep agent runs one full training trial:
 Usage:
   wandb sweep configs/sweep.yaml          # register sweep, prints SWEEP_ID
   wandb agent <SWEEP_ID>                  # run agent (loops until budget exhausted)
+
+  # To register/run a differently-configured sweep (e.g. one that also
+  # searches weight_decay), point FLASHFLOODS_SWEEP_CONFIG at that file -
+  # it must match whichever YAML SWEEP_ID was actually registered from:
+  wandb sweep configs/sweep_adamw.yaml
+  FLASHFLOODS_SWEEP_CONFIG=configs/sweep_adamw.yaml wandb agent <SWEEP_ID>
 """
 
 import os
@@ -54,7 +60,8 @@ def run_trial():
     # FLASHFLOODS_CONFIG before starting `wandb agent` (see cluster/run_sweep.sh).
     base_config_path = os.environ.get('FLASHFLOODS_CONFIG', 'configs/config.yml')
     base_config = load_config(base_config_path)
-    sweep_config = load_config("configs/sweep.yaml")
+    sweep_config_path = os.environ.get('FLASHFLOODS_SWEEP_CONFIG', 'configs/sweep.yaml')
+    sweep_config = load_config(sweep_config_path)
 
     api_key = base_config.get('wandb_api_key')
     if api_key:

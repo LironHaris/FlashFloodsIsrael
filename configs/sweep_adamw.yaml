@@ -1,0 +1,27 @@
+program: src/run_sweep.py
+project: flash-floods-israel
+method: bayes
+metric:
+  goal: minimize
+  name: val_loss
+parameters:
+  early_drop_enabled:
+    value: true
+  early_drop_top_k:
+    value: 3
+  early_drop_epoch:
+    value: 5
+  hidden_size:
+    values: [32, 64, 128, 256]
+  learning_rate:
+    distribution: log_uniform_values
+    min: 0.0001
+    max: 0.01
+  batch_size:
+    values: [64, 128, 256, 512]
+  clip_gradient_norm:
+    values: [0.5, 1.0, 2.0, 5.0]
+  output_dropout:
+    values: [0.0, 0.25, 0.4, 0.5]
+  weight_decay:
+    values: [0.0, 0.001, 0.01, 0.05, 0.1]

@@ -18,10 +18,13 @@ export MPLCONFIGDIR=/sci/labs/efratmorin/liron.haris/.matplotlib_cache
 # 3. ���� ������� �������
 cd /sci/labs/efratmorin/liron.haris/FlashFloodsIsrael
 
-# 4. SWEEP_ID is required (from `wandb sweep configs/sweep.yaml`); CONFIG_PATH picks
-# which model's config each trial sweeps (defaults to configs/config.yml).
-SWEEP_ID="${1:?Usage: sbatch run_sweep.sh <sweep_id> [config_path]}"
+# 4. SWEEP_ID is required (from `wandb sweep <sweep_config>`); CONFIG_PATH picks
+# which model's config each trial sweeps; SWEEP_CONFIG_PATH picks which sweep
+# YAML's project/early-drop settings this agent reads locally (must match
+# whichever file SWEEP_ID was actually registered from).
+SWEEP_ID="${1:?Usage: sbatch run_sweep.sh <sweep_id> [config_path] [sweep_config_path]}"
 export FLASHFLOODS_CONFIG="${2:-configs/config.yml}"
+export FLASHFLOODS_SWEEP_CONFIG="${3:-configs/sweep.yaml}"
 
 # 5. ���� �-Agent
 wandb agent liron-haris-hebrew-university-of-jerusalem/flash-floods-israel/$SWEEP_ID
