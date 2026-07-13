@@ -15,6 +15,12 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
+try:
+    import wandb
+    WANDB_AVAILABLE = True
+except ImportError:
+    WANDB_AVAILABLE = False
+
 
 def load_config(yaml_path):
     """Load the YAML configuration file safely."""
@@ -271,12 +277,42 @@ def main(config=None, analysis=None, basin_ids=None):
     if config is None:
         config = load_config("configs/config.yml")
 
+    use_wandb = config.get('use_wandb', False) and WANDB_AVAILABLE
+    if use_wandb:
+        api_key = config.get('wandb_api_key')
+        if api_key:
+            wandb.login(key=api_key)
+        wandb.init(
+            project=config.get('wandb_project', 'flash-floods-israel'),
+            name=f"{config['experiment_name']}_analyze_results_{analysis}",
+            config=config,
+        )
+
     if analysis == 'scatter':
-        plot_nse_by_static_feature(config, basin_ids=basin_ids)
+        figs = plot_nse_by_static_feature(config, basin_ids=basin_ids)
+        if use_wandb:
+            for static_feature, lead_figs in figs.items():
+                for lead, fig in lead_figs.items():
+                    key = f"analyze_results/scatter/{static_feature}/lead_{lead}h"
+                    wandb.log({key: wandb.Image(fig)})
+                    plt.close(fig)
     elif analysis == 'classification':
-        compute_classification_metrics_by_lead(config, basin_ids=basin_ids)
+        result = compute_classification_metrics_by_lead(config, basin_ids=basin_ids)
+        if use_wandb and result is not None:
+            _, per_lead_means_df, model_means = result
+            for _, row in per_lead_means_df.iterrows():
+                lead = int(row['lead'])
+                wandb.log({
+                    f"analyze_results/classification/precision_lead_{lead}h": row['precision'],
+                    f"analyze_results/classification/recall_lead_{lead}h": row['recall'],
+                })
+            wandb.run.summary['classification_mean_precision'] = model_means['precision']
+            wandb.run.summary['classification_mean_recall'] = model_means['recall']
     else:
         raise ValueError(f"Unknown analysis '{analysis}'. Expected 'scatter' or 'classification'.")
+
+    if use_wandb:
+        wandb.finish()
 
 
 if __name__ == "__main__":
