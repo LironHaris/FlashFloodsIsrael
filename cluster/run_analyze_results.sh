@@ -16,9 +16,9 @@ export MPLCONFIGDIR=/sci/labs/efratmorin/liron.haris/.matplotlib_cache
 cd /sci/labs/efratmorin/liron.haris/FlashFloodsIsrael
 
 # 3. הרצת ניתוח התוצאות שהופקו ע"י quick_test.py/test.py
-# scatter: NSE-by-basin scatter plots colored by nse_scatter_static_features
-# classification: Precision/Recall per basin per lead time + lead/model means
-# Usage: sbatch run_analyze_results.sh <config_path> <scatter|classification>
+# Runs both analyses in one go: NSE-vs-static-feature scatter plots
+# (config['nse_scatter_static_features']) and precision/recall classification
+# metrics (per basin per lead time + lead/model means/variance).
+# Usage: sbatch run_analyze_results.sh <config_path>
 CONFIG_PATH="${1:-configs/config.yml}"
-ANALYSIS="${2:?Usage: sbatch run_analyze_results.sh <config_path> <scatter|classification>}"
-python src/analyze_results.py --config "$CONFIG_PATH" "$ANALYSIS"
+python src/analyze_results.py --config "$CONFIG_PATH"

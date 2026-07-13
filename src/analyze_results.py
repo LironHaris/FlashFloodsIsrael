@@ -13,7 +13,7 @@ import re
 import yaml
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
+import plotly.express as px
 
 try:
     import wandb
@@ -34,11 +34,11 @@ def _get_exp_dir(config):
 
 
 def _save_figure(fig, exp_dir, filename):
-    """Save a figure into {exp_dir}/analysis_plots/ and return the output path."""
+    """Save a Plotly figure into {exp_dir}/analysis_plots/ and return the output path."""
     plots_dir = os.path.join(exp_dir, "analysis_plots")
     os.makedirs(plots_dir, exist_ok=True)
     out_path = os.path.join(plots_dir, filename)
-    fig.savefig(out_path, facecolor=fig.get_facecolor())
+    fig.write_html(out_path)
     return out_path
 
 
@@ -104,35 +104,29 @@ def load_static_feature_values(feature_name, config):
 
 
 def _build_nse_scatter_figure(basins, nse_vals, feature_vals, static_feature, lead, subtitle, config):
-    fig, ax = plt.subplots(figsize=(12, 6.5), dpi=150, facecolor="#fafafa")
-    ax.set_facecolor("#ffffff")
-
-    scatter = ax.scatter(range(len(basins)), nse_vals, c=feature_vals, cmap='viridis',
-                          s=60, edgecolors='#1e1e1e', linewidths=0.5, zorder=3)
-
-    ax.set_xticks(range(len(basins)))
-    ax.set_xticklabels(basins, rotation=90, fontsize=8)
-    ax.set_xlabel("Basin ID")
-    ax.set_ylabel(f"NSE (lead {lead}h)")
-    ax.set_title(f"{config.get('experiment_name', '')}: NSE by Basin ({subtitle}), colored by '{static_feature}'")
-    ax.grid(True, axis='y', linestyle='--', alpha=0.4, zorder=0)
-
-    cbar = fig.colorbar(scatter, ax=ax)
-    cbar.set_label(static_feature)
-
-    fig.tight_layout()
+    """Interactive Plotly scatter: x = static feature value, y = NSE,
+    hovering a point reveals its basin ID."""
+    df = pd.DataFrame({'basin_id': basins, static_feature: feature_vals, 'nse': nse_vals})
+    fig = px.scatter(
+        df, x=static_feature, y='nse', hover_name='basin_id',
+        title=f"{config.get('experiment_name', '')}: NSE vs '{static_feature}' ({subtitle}), lead {lead}h",
+        labels={'nse': f'NSE (lead {lead}h)'},
+        template='plotly_white',
+    )
+    fig.update_traces(marker=dict(size=10, color='#2b8cbe', line=dict(width=1, color='#1e1e1e')))
     return fig
 
 
 def plot_nse_by_static_feature(config, basin_ids=None):
     """
-    Scatter plot per static feature x per forecast lead time x NSE sign:
-    x = basin ID, y = NSE, point color = the static feature's raw value.
-    Each (feature, lead) pair produces two figures - one for basins with
-    negative NSE, one for the rest (NSE >= 0) - so a handful of badly
-    negative basins don't compress the y-axis for the well-performing ones.
-    Static features come from config['nse_scatter_static_features']. Saves to
-    {exp_dir}/analysis_plots/nse_by_basin_{static_feature}_lead{lead}h_{negative|nonnegative}.png
+    Interactive scatter plot per static feature x per forecast lead time x
+    NSE sign: x = the static feature's value, y = NSE, hovering a point
+    reveals its basin ID. Each (feature, lead) pair produces two figures -
+    one for basins with negative NSE, one for the rest (NSE >= 0) - so a
+    handful of badly negative basins don't compress the y-axis for the
+    well-performing ones. Static features come from
+    config['nse_scatter_static_features']. Saves to
+    {exp_dir}/analysis_plots/nse_vs_{static_feature}_lead{lead}h_{negative|nonnegative}.html
     Returns a {feature: {lead: {'negative': fig, 'nonnegative': fig}}} dict
     (a group key is absent if that group had no basins to plot).
     """
@@ -191,7 +185,7 @@ def plot_nse_by_static_feature(config, basin_ids=None):
                 fig = _build_nse_scatter_figure(group_basins, group_nse, group_feat,
                                                  static_feature, lead, subtitle, config)
 
-                filename = f"nse_by_basin_{static_feature}_lead{lead}h_{group_key}.png"
+                filename = f"nse_vs_{static_feature}_lead{lead}h_{group_key}.html"
                 out_path = _save_figure(fig, exp_dir, filename)
                 print(f"[INFO] Saved scatter plot to: {out_path}")
 
@@ -246,9 +240,12 @@ def compute_classification_metrics_by_lead(config, basin_ids=None):
     """
     Precision/Recall per basin per lead time, then the mean across basins
     per lead, then the mean across leads (one model-level number per metric).
-    Saves a single CSV to {exp_dir}/analysis_plots/classification_metrics.csv
-    with per-basin rows, one 'lead_mean' row per lead, and a final
-    'model_mean' row. Returns (per_basin_df, per_lead_means_df, model_means).
+    Also computes model_variance: the pooled variance of precision and of
+    recall across every individual basin x lead value (not the variance of
+    the small per-lead-means series). Saves a single CSV to
+    {exp_dir}/analysis_plots/classification_metrics.csv with per-basin rows,
+    one 'lead_mean' row per lead, and final 'model_mean'/'model_variance'
+    rows. Returns (per_basin_df, per_lead_means_df, model_means, model_variance).
     """
     exp_dir = _get_exp_dir(config)
 
@@ -286,10 +283,13 @@ def compute_classification_metrics_by_lead(config, basin_ids=None):
     per_basin_df = pd.DataFrame(per_basin_rows)
     per_lead_means_df = pd.DataFrame(per_lead_mean_rows)
     model_means = per_lead_means_df[['precision', 'recall']].mean()
+    model_variance = per_basin_df[['precision', 'recall']].var()
 
     model_mean_row = pd.DataFrame([{'basin_id': 'model_mean', 'lead': None,
                                      'precision': model_means['precision'], 'recall': model_means['recall']}])
-    combined_df = pd.concat([per_basin_df, per_lead_means_df, model_mean_row], ignore_index=True)
+    model_variance_row = pd.DataFrame([{'basin_id': 'model_variance', 'lead': None,
+                                         'precision': model_variance['precision'], 'recall': model_variance['recall']}])
+    combined_df = pd.concat([per_basin_df, per_lead_means_df, model_mean_row, model_variance_row], ignore_index=True)
 
     plots_dir = os.path.join(exp_dir, "analysis_plots")
     os.makedirs(plots_dir, exist_ok=True)
@@ -299,12 +299,13 @@ def compute_classification_metrics_by_lead(config, basin_ids=None):
     print("\nClassification metrics — per-lead means:")
     print(per_lead_means_df.to_string(index=False))
     print(f"\nModel mean — precision: {model_means['precision']:.4f}, recall: {model_means['recall']:.4f}")
+    print(f"Model variance — precision: {model_variance['precision']:.4f}, recall: {model_variance['recall']:.4f}")
     print(f"Saved to: {csv_path}\n")
 
-    return per_basin_df, per_lead_means_df, model_means
+    return per_basin_df, per_lead_means_df, model_means, model_variance
 
 
-def main(config=None, analysis=None, basin_ids=None):
+def main(config=None, basin_ids=None):
     if config is None:
         config = load_config("configs/config.yml")
 
@@ -315,49 +316,43 @@ def main(config=None, analysis=None, basin_ids=None):
             wandb.login(key=api_key)
         wandb.init(
             project=config.get('wandb_project', 'flash-floods-israel'),
-            name=f"{config['experiment_name']}_analyze_results_{analysis}",
+            name=f"{config['experiment_name']}_analyze_results",
             config=config,
         )
 
-    if analysis == 'scatter':
-        figs = plot_nse_by_static_feature(config, basin_ids=basin_ids)
-        if use_wandb:
-            for static_feature, lead_figs in figs.items():
-                for lead, group_figs in lead_figs.items():
-                    for group_key, fig in group_figs.items():
-                        key = f"analyze_results/scatter/{static_feature}/lead_{lead}h_{group_key}"
-                        wandb.log({key: wandb.Image(fig)})
-                        plt.close(fig)
-    elif analysis == 'classification':
-        result = compute_classification_metrics_by_lead(config, basin_ids=basin_ids)
-        if use_wandb and result is not None:
-            _, per_lead_means_df, model_means = result
-            for _, row in per_lead_means_df.iterrows():
-                lead = int(row['lead'])
-                wandb.log({
-                    f"analyze_results/classification/precision_lead_{lead}h": row['precision'],
-                    f"analyze_results/classification/recall_lead_{lead}h": row['recall'],
-                })
-            wandb.run.summary['classification_mean_precision'] = model_means['precision']
-            wandb.run.summary['classification_mean_recall'] = model_means['recall']
-    else:
-        raise ValueError(f"Unknown analysis '{analysis}'. Expected 'scatter' or 'classification'.")
+    figs = plot_nse_by_static_feature(config, basin_ids=basin_ids)
+    if use_wandb:
+        for static_feature, lead_figs in figs.items():
+            for lead, group_figs in lead_figs.items():
+                for group_key, fig in group_figs.items():
+                    key = f"analyze_results/scatter/{static_feature}/lead_{lead}h_{group_key}"
+                    wandb.log({key: fig})
+
+    result = compute_classification_metrics_by_lead(config, basin_ids=basin_ids)
+    if use_wandb and result is not None:
+        _, per_lead_means_df, model_means, model_variance = result
+        for _, row in per_lead_means_df.iterrows():
+            lead = int(row['lead'])
+            wandb.log({
+                f"analyze_results/classification/precision_lead_{lead}h": row['precision'],
+                f"analyze_results/classification/recall_lead_{lead}h": row['recall'],
+            })
+        wandb.run.summary['classification_mean_precision'] = model_means['precision']
+        wandb.run.summary['classification_mean_recall'] = model_means['recall']
+        wandb.run.summary['classification_variance_precision'] = model_variance['precision']
+        wandb.run.summary['classification_variance_recall'] = model_variance['recall']
 
     if use_wandb:
         wandb.finish()
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Analyze quick_test.py/test.py results.")
+    parser = argparse.ArgumentParser(
+        description="Analyze quick_test.py/test.py results: NSE-by-static-feature scatter plots "
+                     "(config['nse_scatter_static_features']) and precision/recall classification metrics.")
     parser.add_argument("--config", type=str, default="configs/config.yml",
                          help="Path to the YAML config file matching the run to analyze.")
-    subparsers = parser.add_subparsers(dest="analysis", required=True)
-
-    subparsers.add_parser("scatter", help="NSE-by-basin scatter plot, one per static feature per lead time "
-                                           "(features come from config['nse_scatter_static_features']).")
-    subparsers.add_parser("classification", help="Precision/Recall per basin per lead time, with lead and model means.")
-
     args = parser.parse_args()
 
     cfg = load_config(args.config)
-    main(config=cfg, analysis=args.analysis)
+    main(config=cfg)
