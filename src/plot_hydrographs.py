@@ -45,6 +45,12 @@ def _build_hydrograph_figure(plot_df, title, config, rp_filter=None, hourly_xtic
     Fixed-size canvas (12 x 6.5 in @ 150 dpi).
     rp_filter: if set (int), only draw that return period's threshold line.
     hourly_xticks: if True, format the time axis with hourly ticks (storm windows).
+    X-axis is target time (the real-world moment each value pertains to), not
+    forecast-issuance time: a +{lead}h line's value at row timestamp t is a
+    prediction FOR t+lead, so it's plotted at x=t+lead - matching the
+    convention used by model_compare_test.py:plot_hydrograph_comparison, so
+    every lead's line lands on the same real-world moment it actually
+    predicts rather than the moment the forecast was made.
     """
     active_leads = config.get('forecast_lead_times', [0, 1, 2, 3])
     rp_years = [rp_filter] if rp_filter is not None else config.get('return_periods_years', [2, 5, 10])
@@ -58,7 +64,8 @@ def _build_hydrograph_figure(plot_df, title, config, rp_filter=None, hourly_xtic
     for lead in active_leads:
         col = f"pred_lead_{lead}h"
         if col in plot_df.columns:
-            ax.plot(plot_df['timestamp'], plot_df[col],
+            target_times = plot_df['timestamp'] + pd.Timedelta(hours=lead)
+            ax.plot(target_times, plot_df[col],
                     color=LEAD_COLORS.get(lead, '#7f7f7f'),
                     linestyle=LEAD_STYLES.get(lead, '-'),
                     linewidth=1.4, alpha=0.85, label=f'+{lead}h Lead')
