@@ -30,6 +30,7 @@ from quick_test import setup_evaluation_from_checkpoint
 from test import evaluate_basin_sequences, build_and_export_report
 import find_flood_events as ffe
 import plot_hydrographs as ph
+import peaks_analyze as pa
 
 
 def load_config(yaml_path):
@@ -339,7 +340,8 @@ def plot_nse_cdf_comparison(model_nse, model_leads, comparison_config, output_di
 
 
 def plot_hydrograph_comparison(window_df, model_labels, model_leads, model_color_map, title,
-                                output_dir, filename, event_labels=None, hourly_xticks=False):
+                                output_dir, filename, event_labels=None, hourly_xticks=False,
+                                xlim=None):
     """
     Fixed-size hydrograph: real flow (black) + one line per model's
     pred__{label} column (in its fixed color). window_df's 'timestamp'
@@ -347,9 +349,20 @@ def plot_hydrograph_comparison(window_df, model_labels, model_leads, model_color
     so every model's line - regardless of its own lead - is directly
     comparable at the same x position. event_labels: optional
     {label: 'TP'/'FN'/'FP'/'TN'} to append to each model's legend entry.
+    xlim: optional (start, end) timestamps to fix the x-axis to explicitly.
+    Without this, matplotlib autoscales from window_df's data - which
+    collapses to a degenerate (0, 1) numeric range when the window contains a
+    single unique timestamp (e.g. a one-hour exceedance event with little/no
+    buffer padding), and hourly_xticks then blows past Locator.MAXTICKS trying
+    to tick across that bogus range instead of rendering a normal hydrograph.
+    Pass the caller's own known padded-window bounds to avoid this regardless
+    of how many rows fall inside.
     """
     fig, ax = plt.subplots(figsize=(12, 6.5), dpi=150, facecolor="#fafafa")
     ax.set_facecolor("#ffffff")
+
+    if xlim is not None:
+        ax.set_xlim(*ph._safe_xlim(*xlim))
 
     ax.plot(window_df['timestamp'], window_df['actual_flow'],
             color='#1e1e1e', linewidth=2.0, label='Actual Streamflow')
@@ -446,6 +459,8 @@ def main(comparison_config_path="configs/compare_model_0_leads.yml"):
 
     model_color_map = build_model_color_map(model_labels)
     all_rows = []
+    flow_std_map = pa.load_flow_std_map(model_configs[0])
+    comparison_pairs = []
 
     print(f"\n[INFO] Scanning {len(shared_basins)} basins for flood events across all models...")
     for basin in shared_basins:
@@ -483,6 +498,7 @@ def main(comparison_config_path="configs/compare_model_0_leads.yml"):
         clusters = cluster_events(tagged)
         rows = classify_clusters(clusters, model_labels, basin)
         all_rows.extend(rows)
+        comparison_pairs.extend(pa.collect_comparison_peak_pairs(merged_df, rows, basin, model_leads, flow_std_map))
 
         for idx, cluster in enumerate(clusters, start=1):
             padded_start = max(cluster['core_start'] - pd.Timedelta(days=buffer_days), merged_df['timestamp'].min())
@@ -498,7 +514,7 @@ def main(comparison_config_path="configs/compare_model_0_leads.yml"):
             filename = f"hydrograph_{basin}_event{idx}.png"
             fig = plot_hydrograph_comparison(window_df, model_labels, model_leads, model_color_map,
                                               title, output_dir, filename, event_labels=event_labels,
-                                              hourly_xticks=True)
+                                              hourly_xticks=True, xlim=(padded_start, padded_end))
             if use_wandb:
                 wandb.log({f"compare/flood_events/{basin}/event{idx}": wandb.Image(fig)})
             plt.close(fig)
@@ -506,6 +522,12 @@ def main(comparison_config_path="configs/compare_model_0_leads.yml"):
     csv_path = os.path.join(output_dir, "flood_event_comparison.csv")
     pd.DataFrame(all_rows).to_csv(csv_path, index=False)
     print(f"\n[INFO] Wrote {len(all_rows)} comparison event rows to {csv_path}")
+
+    peaks_detail_df = pd.DataFrame(comparison_pairs)
+    peaks_combined_df = pa.build_comparison_peaks_report(peaks_detail_df, model_labels)
+    peaks_csv_path = os.path.join(output_dir, "peaks_analysis_comparison.csv")
+    peaks_combined_df.to_csv(peaks_csv_path, index=False)
+    print(f"[INFO] Wrote peaks analysis comparison ({len(peaks_detail_df)} matched events) to {peaks_csv_path}")
 
     if use_wandb:
         wandb.finish()

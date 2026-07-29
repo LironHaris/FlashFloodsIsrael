@@ -28,6 +28,7 @@ import plot_hydrographs as ph
 import find_flood_events as ffe
 import find_predicted_flood_events as pfe
 import compare_flood_events as cfe
+import peaks_analyze as pa
 
 
 def load_config(yaml_path):
@@ -140,6 +141,9 @@ def main(config_path="configs/config.yml"):
         pfe.main(config=config, basin_ids=test_basins)
         print("\n[INFO] Comparing real vs. predicted flood events...")
         comparison_path = cfe.main(config=config, basin_ids=test_basins)
+
+        print("\n[INFO] Computing peak timing/magnitude analysis...")
+        pa.main(config=config, basin_ids=test_basins)
 
         if os.path.exists(comparison_path):
             comparison_df = pd.read_csv(comparison_path, dtype={'basin_id': str})

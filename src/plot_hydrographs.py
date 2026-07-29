@@ -39,12 +39,35 @@ def _save_figure(fig, exp_dir, filename):
     return out_path
 
 
-def _build_hydrograph_figure(plot_df, title, config, rp_filter=None, hourly_xticks=False):
+def _safe_xlim(start, end):
+    """
+    Widens a (start, end) x-axis bound when they're equal (a single-timestamp
+    window - e.g. a one-hour exceedance event with no buffer padding).
+    matplotlib's set_xlim falls back to expanding identical low/high values by
+    ~0.1% of their absolute numeric value when they're equal; for date-ordinal
+    floats that magnitude is years, not hours, which is what produced the
+    Locator.MAXTICKS blowup this guards against. A fixed +/-30min margin keeps
+    a degenerate single-point window visually sane instead.
+    """
+    if start == end:
+        return start - pd.Timedelta(minutes=30), end + pd.Timedelta(minutes=30)
+    return start, end
+
+
+def _build_hydrograph_figure(plot_df, title, config, rp_filter=None, hourly_xticks=False, xlim=None):
     """
     Shared Matplotlib figure builder for hydrograph functions.
     Fixed-size canvas (12 x 6.5 in @ 150 dpi).
     rp_filter: if set (int), only draw that return period's threshold line.
     hourly_xticks: if True, format the time axis with hourly ticks (storm windows).
+    xlim: optional (start, end) timestamps to fix the x-axis to explicitly.
+    Without this, matplotlib autoscales the x-axis from the plotted data - which
+    collapses to a degenerate (0, 1) numeric range when a window contains a
+    single unique timestamp (e.g. a one-hour exceedance event with little/no
+    buffer padding). hourly_xticks then tries to place ticks every 2 hours
+    across that bogus range, blowing past Locator.MAXTICKS and rendering as a
+    dense tick/gridline smear instead of a hydrograph. Passing the caller's own
+    known window bounds sidesteps this regardless of how many rows fall inside.
     X-axis is target time (the real-world moment each value pertains to), not
     forecast-issuance time: a +{lead}h line's value at row timestamp t is a
     prediction FOR t+lead, so it's plotted at x=t+lead - matching the
@@ -57,6 +80,9 @@ def _build_hydrograph_figure(plot_df, title, config, rp_filter=None, hourly_xtic
 
     fig, ax = plt.subplots(figsize=(12, 6.5), dpi=150, facecolor="#fafafa")
     ax.set_facecolor("#ffffff")
+
+    if xlim is not None:
+        ax.set_xlim(*_safe_xlim(*xlim))
 
     ax.plot(plot_df['timestamp'], plot_df['actual_flow'],
             color='#1e1e1e', linewidth=2.0, label='Actual Streamflow')
@@ -130,7 +156,8 @@ def plot_basin_storm_event(basin_id, start_window, end_window, config, label=Non
     title = (f"Basin {basin_id} — Storm Event" + (f" [{label}]" if label else "") + "\n"
              f"Core: {core_start.strftime('%Y-%m-%d %H:%M')} → {core_end.strftime('%Y-%m-%d %H:%M')}")
 
-    fig = _build_hydrograph_figure(plot_df, title, config, hourly_xticks=True)
+    fig = _build_hydrograph_figure(plot_df, title, config, hourly_xticks=True,
+                                    xlim=(padded_start, padded_end))
     if event_idx is not None and label is not None:
         filename = f"hydrograph_{basin_id}_event{event_idx}_{label}.png"
     else:
