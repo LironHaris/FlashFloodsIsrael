@@ -143,7 +143,7 @@ def evaluate_basin_sequences(basin, test_dataset, model, device, config):
             # non-negative streamflow (clamp here rather than in the model so training
             # and its gradients remain unconstrained).
             raw_prediction = model(x_dynamic, x_static).squeeze(0) * basin_std + basin_mean
-            prediction = torch.clamp(raw_prediction, min=0).numpy()
+            prediction = torch.clamp(raw_prediction, min=0).cpu().numpy()
 
             # Metadata tracking collection (Outside model execution space)
             timestamps.append(test_dataset.sample_date_mappings[idx])

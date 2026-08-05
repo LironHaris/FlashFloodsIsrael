@@ -41,10 +41,12 @@ def setup_evaluation_from_checkpoint(config):
     """
     Handles model reconstruction and loads weights from config['checkpoint_path'],
     instead of test.py's fixed run_dir/experiment_name/best_model.pt location.
-    Inference is forced on CPU to maintain simplicity and memory stability.
+    Uses config['device'] (falling back to CPU if CUDA isn't available), same
+    convention as train.py.
     """
-    device = torch.device('cpu')
-    print(f"[INFO] Evaluation environment locked on hardware target: {device}")
+    device_str = config.get('device', 'cpu')
+    device = torch.device(device_str if torch.cuda.is_available() or device_str == 'cpu' else 'cpu')
+    print(f"[INFO] Evaluation environment targeting hardware: {device}")
 
     print("[INFO] Reconstructing EA-LSTM architecture dynamically...")
     model = EALSTMModel(config).to(device)
