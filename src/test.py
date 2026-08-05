@@ -165,8 +165,10 @@ def build_and_export_report(basin, output_dir, timestamps, actual_leads_dict, pr
     df = pd.DataFrame({'timestamp': timestamps})
     for col_name, values in actual_leads_dict.items():
         df[col_name] = values
-    # 'actual_flow' alias for lead-0: used by hydrograph plots and threshold metrics
-    df['actual_flow'] = df['actual_lead_0h']
+    # 'actual_flow' alias for the model's primary (first configured) lead -
+    # used by hydrograph plots and threshold metrics
+    primary_lead = config['forecast_lead_times'][0]
+    df['actual_flow'] = df[f'actual_lead_{primary_lead}h']
 
     # Append multi-horizon prediction outputs
     for col_name, values in pred_leads_dict.items():
