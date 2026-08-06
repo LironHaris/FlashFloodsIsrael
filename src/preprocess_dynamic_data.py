@@ -29,10 +29,15 @@ Pipeline Architecture & Functional Stages:
    processed further (see min_combined_availability_pct in config).
 
 4. No Fabrication Policy:
-   Neither precipitation ('hourly_precipitation') nor streamflow ('Flow_m3_sec') gaps are
-   imputed - both are left explicitly as NaN. Inventing values for either would compromise the
-   learning capabilities of the neural model and induce false physical behaviors. Any training
-   window touching a NaN in either is excluded downstream by dataset.py's validity check.
+   Streamflow ('Flow_m3_sec') gaps are never imputed - left explicitly as NaN. Precipitation
+   ('hourly_precipitation') gaps are also left as NaN, with one narrow exception: raw sub-hourly
+   rain readings missing for at most 30 minutes (a short sensor blip) are linearly interpolated
+   between their nearest real neighbors before hourly aggregation (see MAX_RAIN_GAP_STEPS /
+   _interpolate_short_rain_gaps). Longer rain gaps, and any gap touching the start/end of a
+   basin's record, are still left as real NaN. Inventing values beyond this narrow case would
+   compromise the learning capabilities of the neural model and induce false physical behaviors.
+   Any training window touching a remaining NaN is excluded downstream by dataset.py's validity
+   check.
 """
 
 import os
@@ -51,6 +56,34 @@ def load_config(yaml_path):
 # --------------------------------------------------------------------------------
 # 1. Resampling Function
 # --------------------------------------------------------------------------------
+
+# Raw sub-hourly rain readings are on a fixed 10-minute native cadence, so a
+# 30-minute gap is at most 3 consecutive missing readings.
+MAX_RAIN_GAP_STEPS = 3
+
+
+def _interpolate_short_rain_gaps(rain_series, max_gap_steps):
+    """
+    Linearly interpolates interior NaN runs in `rain_series` (a regularly
+    spaced 10-min series) that are at most `max_gap_steps` readings long,
+    using the two nearest real (non-NaN) values bounding each qualifying
+    run. Longer runs, and any run touching the start/end of the series (no
+    bounding value on one side), are left untouched as real NaN - same
+    run-boundary detection pattern as drop_long_flow_nan_stretches below.
+    """
+    nan_mask = rain_series.isna().to_numpy()
+    padded = np.concatenate([[False], nan_mask, [False]])
+    starts = np.where(~padded[:-1] & padded[1:])[0]
+    ends = np.where(padded[:-1] & ~padded[1:])[0]
+
+    interpolated = rain_series.interpolate(method='linear', limit_area='inside')
+    result = rain_series.copy()
+    for s, e in zip(starts, ends):
+        if (e - s) <= max_gap_steps:
+            result.iloc[s:e] = interpolated.iloc[s:e]
+    return result
+
+
 def resample_to_hourly(df):
     """
     Resample raw data to hourly resolution. An hour's flow or rain value is only
@@ -59,9 +92,16 @@ def resample_to_hourly(df):
     which would otherwise fabricate a plausible-looking value from incomplete data:
     sum() treats an all-NaN/empty group as 0.0, and mean() with its default
     skipna=True silently averages over just the present sub-readings.
+
+    Before aggregation, short (<=30min) NaN gaps in the raw rain readings are
+    linearly interpolated (see _interpolate_short_rain_gaps), so a lone missed
+    reading no longer NaNs out its whole hour; longer gaps are left as-is and
+    still propagate to a NaN hour as before.
     """
     df['date'] = pd.to_datetime(df['date'])
     df.set_index('date', inplace=True)
+
+    df['mean_rain'] = _interpolate_short_rain_gaps(df['mean_rain'], MAX_RAIN_GAP_STEPS)
 
     def strict_sum(s):
         return np.nan if len(s) == 0 or s.isna().any() else s.sum()
