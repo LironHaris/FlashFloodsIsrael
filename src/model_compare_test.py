@@ -316,6 +316,10 @@ def plot_nse_cdf_comparison(model_nse, model_leads, comparison_config, output_di
         lead = model_leads[label]
         ax.plot(values, cdf_y, color=color_map[label], linewidth=2, label=f'{label} (+{lead}h, n={n})')
 
+        median_nse = float(np.median(values))
+        ax.axvline(x=median_nse, color=color_map[label], linewidth=1.5, linestyle='--',
+                   alpha=0.8, label=f'{label} median: {median_nse:.3f}')
+
     if not any_curve:
         plt.close(fig)
         return None
@@ -324,6 +328,7 @@ def plot_nse_cdf_comparison(model_nse, model_leads, comparison_config, output_di
                  fontsize=12, fontweight='bold', pad=15, color='#2c3e50')
     ax.set_xlabel('NSE', fontsize=10.5, labelpad=8)
     ax.set_ylabel('CDF', fontsize=10.5, labelpad=8)
+    ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
     ax.grid(True, linestyle=':', alpha=0.5, color='#b0b0b0')
     ax.legend(loc='lower right', frameon=True, facecolor='#ffffff', edgecolor='#e2e2e2', fontsize=9)
