@@ -282,11 +282,12 @@ def collect_comparison_peak_pairs(merged_df, classified_rows, basin_id, model_le
 
 def build_comparison_peaks_report(comparison_detail_df, model_labels):
     """
-    Assembles the multi-model peaks report: detail rows (grouped by
-    model_label, label-tagged) followed by each model's model_mean/
-    model_variance rows per scope (no lead_mean tier - each compared model
-    has exactly one lead by construction, so model_mean already is that
-    model's only-lead pooled stat).
+    Assembles the multi-model peaks report as two separate frames: detail
+    rows (grouped by model_label, label-tagged) and summary rows (each
+    model's model_mean/model_variance rows per scope - no lead_mean tier,
+    since each compared model has exactly one lead by construction, so
+    model_mean already is that model's only-lead pooled stat).
+    Returns (detail_df, summary_df).
     """
     if comparison_detail_df.empty:
         comparison_detail_df = pd.DataFrame(columns=['model_label'] + DETAIL_COLUMNS)
@@ -313,7 +314,7 @@ def build_comparison_peaks_report(comparison_detail_df, model_labels):
             })
 
     summary_df = pd.DataFrame(summary_rows)
-    return pd.concat([comparison_detail_df, summary_df], ignore_index=True)
+    return comparison_detail_df, summary_df
 
 
 if __name__ == "__main__":

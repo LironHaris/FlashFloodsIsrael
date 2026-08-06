@@ -411,53 +411,19 @@ def plot_hydrograph_comparison(window_df, model_labels, model_leads, model_color
     return fig
 
 
-def main(comparison_config_path="configs/compare_model_0_leads.yml"):
-    comparison_config = load_config(comparison_config_path)
-
-    model_config_paths = comparison_config['model_configs']
-    model_labels_cfg = comparison_config.get('model_labels')
-
-    print("=" * 75)
-    print("      Multi-Model Comparison — Single-Lead-Time Models Only")
-    print("=" * 75)
-    print(f"[INFO] Comparing {len(model_config_paths)} models: {model_config_paths}")
-
-    model_configs, model_labels, shared_basins, model_leads = validate_comparable(
-        model_config_paths, model_labels_cfg
-    )
-    print(f"[INFO] Validation passed. {len(shared_basins)} shared test basins. Leads: {model_leads}")
-
-    output_dir = os.path.join(comparison_config.get('run_dir', './runs/model_comparisons/'),
-                               comparison_config['comparison_name'])
-    os.makedirs(output_dir, exist_ok=True)
-
-    use_wandb = comparison_config.get('use_wandb', False) and WANDB_AVAILABLE
-    if use_wandb:
-        api_key = comparison_config.get('wandb_api_key')
-        if api_key:
-            wandb.login(key=api_key)
-        wandb.init(
-            project=comparison_config.get('wandb_project', 'flash-floods-israel'),
-            name=f"{comparison_config['comparison_name']}_compare",
-            config=comparison_config,
-        )
-
-    # Step 1: evaluate every model over the shared basin list (writes each
-    # model's own report CSVs into its own run_dir/experiment_name, unchanged
-    # from quick_test.py's behavior).
-    for label, config in zip(model_labels, model_configs):
-        print(f"\n[INFO] Evaluating model '{label}' ({config['experiment_name']})...")
-        run_single_model_eval(config, shared_basins)
-
-    # Step 2: comparison NSE CDF - one curve per model, same figure.
-    model_nse = compute_model_nse(model_configs, model_labels, model_leads, shared_basins)
-    cdf_fig = plot_nse_cdf_comparison(model_nse, model_leads, comparison_config, output_dir)
-    if cdf_fig is not None:
-        if use_wandb:
-            wandb.log({"compare/nse_cdf": wandb.Image(cdf_fig)})
-        plt.close(cdf_fig)
-
-    # Step 3: per-basin target-time merge, N-way flood-event union/classification, hydrographs.
+def run_event_and_peaks_analysis(model_configs, model_labels, model_leads, shared_basins,
+                                  output_dir, use_wandb=False):
+    """
+    Per-basin target-time merge, N-way flood-event union/classification,
+    hydrographs, and peak timing/magnitude analysis. Reuses each model's
+    already-saved visual_report_basin_*.csv (via merge_basin_reports) - no
+    model/inference needed, so this can be re-run standalone any time after
+    run_single_model_eval has produced those reports at least once (see
+    replot_nse_cdf_comparison.py). Writes flood_event_comparison.csv,
+    peaks_analysis_comparison.csv, and peaks_analysis_comparison_summary.csv
+    to output_dir, plus per-event hydrograph PNGs into
+    output_dir/comparison_plots/.
+    """
     prediction_rp = model_configs[0]['prediction_threshold']
     buffer_days = model_configs[0].get('visual_buffer_days', 4)
     merge_gap_hours = model_configs[0].get('event_merge_gap_hours', 0)
@@ -529,10 +495,66 @@ def main(comparison_config_path="configs/compare_model_0_leads.yml"):
     print(f"\n[INFO] Wrote {len(all_rows)} comparison event rows to {csv_path}")
 
     peaks_detail_df = pd.DataFrame(comparison_pairs)
-    peaks_combined_df = pa.build_comparison_peaks_report(peaks_detail_df, model_labels)
+    peaks_detail_df, peaks_summary_df = pa.build_comparison_peaks_report(peaks_detail_df, model_labels)
+
     peaks_csv_path = os.path.join(output_dir, "peaks_analysis_comparison.csv")
-    peaks_combined_df.to_csv(peaks_csv_path, index=False)
+    peaks_detail_df.to_csv(peaks_csv_path, index=False)
     print(f"[INFO] Wrote peaks analysis comparison ({len(peaks_detail_df)} matched events) to {peaks_csv_path}")
+
+    peaks_summary_csv_path = os.path.join(output_dir, "peaks_analysis_comparison_summary.csv")
+    peaks_summary_df.to_csv(peaks_summary_csv_path, index=False)
+    print(f"[INFO] Wrote peaks analysis comparison summary to {peaks_summary_csv_path}")
+
+
+def main(comparison_config_path="configs/compare_model_0_leads.yml"):
+    comparison_config = load_config(comparison_config_path)
+
+    model_config_paths = comparison_config['model_configs']
+    model_labels_cfg = comparison_config.get('model_labels')
+
+    print("=" * 75)
+    print("      Multi-Model Comparison — Single-Lead-Time Models Only")
+    print("=" * 75)
+    print(f"[INFO] Comparing {len(model_config_paths)} models: {model_config_paths}")
+
+    model_configs, model_labels, shared_basins, model_leads = validate_comparable(
+        model_config_paths, model_labels_cfg
+    )
+    print(f"[INFO] Validation passed. {len(shared_basins)} shared test basins. Leads: {model_leads}")
+
+    output_dir = os.path.join(comparison_config.get('run_dir', './runs/model_comparisons/'),
+                               comparison_config['comparison_name'])
+    os.makedirs(output_dir, exist_ok=True)
+
+    use_wandb = comparison_config.get('use_wandb', False) and WANDB_AVAILABLE
+    if use_wandb:
+        api_key = comparison_config.get('wandb_api_key')
+        if api_key:
+            wandb.login(key=api_key)
+        wandb.init(
+            project=comparison_config.get('wandb_project', 'flash-floods-israel'),
+            name=f"{comparison_config['comparison_name']}_compare",
+            config=comparison_config,
+        )
+
+    # Step 1: evaluate every model over the shared basin list (writes each
+    # model's own report CSVs into its own run_dir/experiment_name, unchanged
+    # from quick_test.py's behavior).
+    for label, config in zip(model_labels, model_configs):
+        print(f"\n[INFO] Evaluating model '{label}' ({config['experiment_name']})...")
+        run_single_model_eval(config, shared_basins)
+
+    # Step 2: comparison NSE CDF - one curve per model, same figure.
+    model_nse = compute_model_nse(model_configs, model_labels, model_leads, shared_basins)
+    cdf_fig = plot_nse_cdf_comparison(model_nse, model_leads, comparison_config, output_dir)
+    if cdf_fig is not None:
+        if use_wandb:
+            wandb.log({"compare/nse_cdf": wandb.Image(cdf_fig)})
+        plt.close(cdf_fig)
+
+    # Step 3: per-basin target-time merge, N-way flood-event union/classification, hydrographs, peaks.
+    run_event_and_peaks_analysis(model_configs, model_labels, model_leads, shared_basins,
+                                  output_dir, use_wandb)
 
     if use_wandb:
         wandb.finish()
