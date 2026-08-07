@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt
 import wandb
 
 from model import EALSTMModel
-from dataset import get_dataloader
+from dataset import get_dataloader, build_cv_group_datasets, get_cv_fold_dataloaders
 from loss import BatchAwareLossWrapper
 
 
@@ -200,8 +200,26 @@ def main(config_path="configs/config.yml"):
 
     # Step 2: Initialize Data Pipeline Loaders
     print("[INFO] Constructing dataset pipelines and dataloaders...")
-    train_loader = get_dataloader(split_type='train', config=config, use_basin_splits=use_spatial)
-    val_loader = get_dataloader(split_type='val', config=config, use_basin_splits=use_spatial)
+
+    cv_config = config.get('cross_validation', {}) or {}
+    cv_enabled = cv_config.get('enabled', False)
+
+    if cv_enabled:
+        num_folds = len(cv_config['groups'])
+        training_rep = cv_config['training_rep']
+        if num_folds < 2:
+            raise ValueError(f"cross_validation.groups must contain at least 2 groups, got {num_folds}.")
+        if training_rep < 1:
+            raise ValueError(f"cross_validation.training_rep must be >= 1, got {training_rep}.")
+        epochs = num_folds * training_rep
+        print(f"[INFO] Cross-validation enabled: {num_folds} groups x training_rep={training_rep} "
+              f"-> {epochs} epochs (config['epochs'] ignored).")
+        fixed_train_datasets, group_datasets = build_cv_group_datasets(config, use_basin_splits=use_spatial)
+        train_loader, val_loader = None, None
+    else:
+        epochs = config.get('epochs', 30)
+        train_loader = get_dataloader(split_type='train', config=config, use_basin_splits=use_spatial)
+        val_loader = get_dataloader(split_type='val', config=config, use_basin_splits=use_spatial)
 
     # Step 3: Construct Architecture and Optimization Engines
     print("[INFO] Instantiating EA-LSTM model architecture dynamically...")
@@ -249,18 +267,29 @@ def main(config_path="configs/config.yml"):
         )
 
     # Trackers for saving checkpoints and plotting history
-    best_val_loss = validate_epoch(model, val_loader, criterion, device, config) if start_epoch > 0 else float('inf')
+    if start_epoch > 0:
+        if cv_enabled:
+            resume_fold = start_epoch % num_folds
+            train_loader, val_loader = get_cv_fold_dataloaders(
+                fixed_train_datasets, group_datasets, resume_fold, config)
+        best_val_loss = validate_epoch(model, val_loader, criterion, device, config)
+    else:
+        best_val_loss = float('inf')
     train_loss_history = []
     val_loss_history = []
 
     # Step 4: Core Training and Validation Loop Execution
-    epochs = config.get('epochs', 30)
     if start_epoch >= epochs:
         print(f"[INFO] Checkpoint already at epoch {start_epoch} >= target epochs {epochs}. Nothing to train.")
     else:
         print(f"[INFO] Initiating optimization loop for epochs {start_epoch + 1}-{epochs}.\n")
 
     for epoch in range(start_epoch, epochs):
+        if cv_enabled:
+            fold = epoch % num_folds
+            train_loader, val_loader = get_cv_fold_dataloaders(
+                fixed_train_datasets, group_datasets, fold, config)
+
         # Part A: Execute Training Cycle
         train_loss = train_epoch(model, train_loader, optimizer, criterion, device, config)
         
@@ -284,11 +313,14 @@ def main(config_path="configs/config.yml"):
         print(f"  -> Val {metric_label}:   {val_loss:.5f}")
 
         if use_wandb:
-            wandb.log({
+            log_dict = {
                 'train_loss': train_loss,
                 'val_loss': val_loss,
                 'learning_rate': optimizer.param_groups[0]['lr'],
-            }, step=epoch + 1)
+            }
+            if cv_enabled:
+                log_dict['cv/held_out_group'] = fold + 1
+            wandb.log(log_dict, step=epoch + 1)
         
         # Part C: Strategic Model Selection (Save Best Weights)
         if val_loss < best_val_loss:

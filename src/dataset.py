@@ -272,5 +272,139 @@ def get_dataloader(split_type, config, use_basin_splits=True):
     
     loader.static_feature_names = config['static_attributes']
     loader.dynamic_feature_names = config['dynamic_inputs']
-    
+
     return loader
+
+
+# --------------------------------------------------------------------------------
+# K-Fold Cross-Validation Support
+# --------------------------------------------------------------------------------
+
+def _consecutive_year_runs(years):
+    """Groups a list of years into maximal runs of consecutive years, e.g.
+    [2010, 2011, 2013, 2014, 2015] -> [(2010, 2011), (2013, 2015)]."""
+    sorted_years = sorted(years)
+    runs = []
+    run_start = run_end = sorted_years[0]
+    for y in sorted_years[1:]:
+        if y == run_end + 1:
+            run_end = y
+        else:
+            runs.append((run_start, run_end))
+            run_start = run_end = y
+    runs.append((run_start, run_end))
+    return runs
+
+
+def build_year_range_period(start_year, end_year, hydro_year_start_month=10):
+    """
+    (start_date, end_date) datetime-string tuple spanning start_year through
+    end_year inclusive, in this project's user-facing convention: "year N"
+    starts Oct 1 of N and runs through Sep 30 of N+1 (e.g. a single-year
+    range 2016 = '2016-10-01 08:00:00' -> '2017-09-30 07:00:00'; a
+    multi-year range 2013-2015 = '2013-10-01 08:00:00' -> '2016-09-30
+    07:00:00') - matches the literal digits already used in every config's
+    train_periods/validation/test date bounds (verified against
+    configs/best_model_0_0.yml's 2013-2015 and 2019-2022 train_periods
+    entries and its 2016-2018 test span).
+    """
+    start = pd.Timestamp(year=start_year, month=hydro_year_start_month, day=1, hour=8)
+    next_start = pd.Timestamp(year=end_year + 1, month=hydro_year_start_month, day=1, hour=8)
+    end = next_start - pd.Timedelta(days=1, hours=1)
+    return start.strftime('%Y-%m-%d %H:%M:%S'), end.strftime('%Y-%m-%d %H:%M:%S')
+
+
+def build_year_periods(years, hydro_year_start_month=10):
+    """
+    Converts a (possibly non-consecutive) list of years into the minimal set
+    of disjoint (start_date, end_date) period tuples - one per maximal run
+    of consecutive years - so adjacent years merge into a single continuous
+    range instead of leaving a spurious 1-day gap at each internal
+    year-boundary (the "day before next Oct 1" end-of-year formula, applied
+    per year rather than per run, would otherwise drop the last day of every
+    year but the run's last).
+    """
+    return [build_year_range_period(s, e, hydro_year_start_month)
+            for s, e in _consecutive_year_runs(years)]
+
+
+def build_cv_group_datasets(config, use_basin_splits=True):
+    """
+    Precomputes everything a k-fold cross-validation training run needs, once:
+      - the fixed/always-train slice, i.e. whatever train_periods already
+        resolves to (e.g. an open-start "years before the CV pool" entry) -
+        never rotated out as validation.
+      - for every configured cross_validation.groups entry, both a
+        train-tolerance and an eval-tolerance set of per-basin datasets (the
+        NaN-tolerance policy - train_max_nan_pct vs eval_max_nan_pct - depends
+        on which role a group plays for a given epoch, so both are built
+        up front rather than re-read from disk every epoch).
+    Raises ValueError if any group's years are claimed by another group,
+    overlap the test period, or overlap train_periods (the fixed slice must
+    be trimmed to exclude any year handed to cross_validation.groups).
+    Returns (fixed_train_datasets, group_datasets) where group_datasets is
+    {group_idx: {'train': [...], 'val': [...]}}.
+    """
+    cv_config = config['cross_validation']
+    groups = cv_config['groups']
+    hydro_start = config.get('hydro_year_start_month', 10)
+    basin_ids = _load_basin_ids(config['train_basin_file'], config, use_basin_splits, 'train')
+
+    seen_years = set()
+    for g in groups:
+        dup = seen_years.intersection(g)
+        if dup:
+            raise ValueError(f"cross_validation.groups: year(s) {dup} appear in more than one group.")
+        seen_years.update(g)
+
+    # Fixed/always-train slice: whatever train_periods already resolves to -
+    # unconditionally included in every fold's training set.
+    _, fixed_periods, _ = _get_split_bounds_and_config('train', config, use_basin_splits)
+    fixed_train_datasets = _build_basin_datasets(basin_ids, config, fixed_periods, split_type='train')
+
+    test_start = pd.Timestamp(config['test_start_date'])
+    test_end = pd.Timestamp(config['test_end_date'])
+
+    group_datasets = {}
+    for idx, years in enumerate(groups):
+        periods = build_year_periods(years, hydro_start)
+        for start_str, end_str in periods:
+            s, e = pd.Timestamp(start_str), pd.Timestamp(end_str)
+            if s <= test_end and e >= test_start:
+                raise ValueError(f"cross_validation.groups[{idx}] year period "
+                                  f"[{start_str}, {end_str}] overlaps the test period.")
+            for fstart, fend in fixed_periods:
+                if fstart is not None and s <= pd.Timestamp(fend) and e >= pd.Timestamp(fstart):
+                    raise ValueError(f"cross_validation.groups[{idx}] year period "
+                                      f"[{start_str}, {end_str}] overlaps train_periods "
+                                      f"- trim train_periods down to just the fixed portion.")
+        group_datasets[idx] = {
+            'train': _build_basin_datasets(basin_ids, config, periods, split_type='train'),
+            'val': _build_basin_datasets(basin_ids, config, periods, split_type='val'),
+        }
+    return fixed_train_datasets, group_datasets
+
+
+def get_cv_fold_dataloaders(fixed_train_datasets, group_datasets, val_group_idx, config):
+    """
+    Cheaply recombines the datasets precomputed by build_cv_group_datasets
+    into this epoch's train/val DataLoaders - no CSV re-reads. val_group_idx
+    is held out as validation (its eval-tolerance variant); the fixed slice
+    plus every other group's train-tolerance variant form the training set.
+    """
+    train_datasets = list(fixed_train_datasets) + [
+        ds for g, variants in group_datasets.items()
+        if g != val_group_idx for ds in variants['train']
+    ]
+    val_datasets = group_datasets[val_group_idx]['val']
+
+    train_loader = DataLoader(ConcatDataset(train_datasets), batch_size=config['batch_size'],
+                               shuffle=True, num_workers=_resolve_num_workers(config), drop_last=False)
+    val_loader = DataLoader(ConcatDataset(val_datasets), batch_size=config['batch_size'],
+                             shuffle=False, num_workers=_resolve_num_workers(config), drop_last=False)
+
+    for loader in (train_loader, val_loader):
+        loader.static_feature_names = config['static_attributes']
+        loader.dynamic_feature_names = config['dynamic_inputs']
+
+    return train_loader, val_loader

@@ -39,6 +39,9 @@ validation_end_date: '2013-09-30 07:00:00'
 test_start_date: '2016-10-01 08:00:00'
 test_end_date: '2019-09-30 07:00:00'
 
+cross_validation:
+  enabled: false
+
 # if you want to use different (continuous or split) periods per basin (and period) define path to pickle files here.
 per_basin_train_periods_file:
 per_basin_validation_periods_file:

@@ -6,7 +6,7 @@
 
 
 # experiment name, used as folder name
-experiment_name: model_0_adamw
+experiment_name: model_1_3_cv
 
 # --- Weights & Biases ---
 use_wandb: true
@@ -25,13 +25,12 @@ test_basin_file: data/basin_lists/israel_test.txt
 # training, validation and test time periods (format = 'YYYY-MM-DD HH:MM:SS') NOTE: nueral hydrology format = 'dd/mm/yyyy'
 # training time periods: list of (possibly disjoint) [start, end] windows.
 # Leave a period's start_date empty to use each basin's own earliest available record.
+# Under cross_validation (below), this is just the fixed/always-train slice
+# (years earlier than the CV pool) - the 2013-2016/2019-2023 years that used
+# to live here now rotate through cross_validation.groups instead.
 train_periods:
   - start_date:
-    end_date: '2010-09-30 07:00:00'
-  - start_date: '2013-10-01 08:00:00'
-    end_date: '2016-09-30 07:00:00'
-  - start_date: '2019-10-01 08:00:00'
-    end_date: '2023-09-30 07:00:00'
+    end_date: '2008-09-30 07:00:00'
 
 validation_start_date: '2010-10-01 08:00:00'
 validation_end_date: '2013-09-30 07:00:00'
@@ -40,7 +39,15 @@ test_start_date: '2016-10-01 08:00:00'
 test_end_date: '2019-09-30 07:00:00'
 
 cross_validation:
-  enabled: false
+  enabled: true
+  training_rep: 10
+  groups:
+    - [2008, 2009]
+    - [2010, 2011]
+    - [2012, 2013]
+    - [2014, 2015]
+    - [2019, 2020]
+    - [2021, 2022]
 
 # if you want to use different (continuous or split) periods per basin (and period) define path to pickle files here.
 per_basin_train_periods_file:
@@ -80,7 +87,7 @@ metrics:
 model: ealstm
 
 # path to weight file that should be used as initial weights. Leave empty to start from random weights
-checkpoint_path: /sci/labs/efratmorin/liron.haris/FlashFloodsIsrael/runs/model_0_adamw/best_model.pt
+checkpoint_path:
 
 # prediction head [regression]. Define the head specific parameters below
 head: regression
@@ -171,7 +178,7 @@ output_dropout: 0.4
 # --- Training configuration -----------------------------------------------------------------------
 
 # specify optimizer [Adam, AdamW]
-optimizer: AdamW
+optimizer: Adam
 
 # specify loss [MSE, NSE, RMSE]
 loss: MSE
@@ -264,7 +271,12 @@ availability_report_file: ./data/processed/data_availability_report.csv
 # entries freely; the pipeline loops over this list and is not hardcoded to any count.
 # NOTE: keep 'name' values in sync with dynamic_inputs below - not auto-enforced.
 cumulative_rain_windows:
-  
+  - name: rain_cum_1week
+    hours: 168
+  - name: rain_cum_4weeks
+    hours: 672
+  - name: rain_cum_8weeks
+    hours: 1344
 
 # Minimum % of hours (from basin_start_date through END_DATE) where BOTH Flow_m3_sec
 # and hourly_precipitation are non-NaN, required for a basin to be used at all. Basins
@@ -272,18 +284,25 @@ cumulative_rain_windows:
 # though they still get a flagged row in the availability report for auditing.
 min_combined_availability_pct: 48
 
-# Per-dynamic-input NaN tolerance: the max % of a window's timesteps that
-# may be NaN for that feature before the window is excluded outright. Below
-# the threshold, the window is kept and NaNs in that feature are imputed as
-# literal zero rainfall. train_max_nan_pct=0 everywhere reproduces today's
-# exact "any NaN excludes" behavior for training (never fabricate training
-# data). eval_max_nan_pct is the val/test tolerance - set higher to keep
-# more real-world-realistic (including flood-adjacent) windows in
-# evaluation instead of only scoring on the cleanest data. A feature with no
-# entry here defaults to 0/0 (today's behavior, unchanged).
+# Per-dynamic-input NaN tolerance: the max % of a window's timesteps that may
+# be NaN for that feature before the window is excluded outright. Below the
+# threshold, the window is kept and NaNs in that feature are imputed as
+# literal zero rainfall. Keys not listed here default to
+# train_max_nan_pct=0/eval_max_nan_pct=0 (today's "any NaN excludes"
+# behavior, for both train and val/test). See configs/model_0.yml for an
+# example entry raising eval_max_nan_pct.
 dynamic_input_nan_tolerance:
   hourly_precipitation:
     train_max_nan_pct: 0
+    eval_max_nan_pct: 100
+  rain_cum_1week:
+    train_max_nan_pct: 10
+    eval_max_nan_pct: 100
+  rain_cum_4weeks:
+    train_max_nan_pct: 20
+    eval_max_nan_pct: 100
+  rain_cum_8weeks:
+    train_max_nan_pct: 30
     eval_max_nan_pct: 100
 
 generic_data_config:
@@ -310,6 +329,9 @@ forcings: maurer_extended
 #     - total_precipitation_nldas_hourly
 dynamic_inputs:
 - hourly_precipitation
+- rain_cum_1week
+- rain_cum_4weeks
+- rain_cum_8weeks
 
 # which columns to use as target
 target_variables:
@@ -431,7 +453,7 @@ static_attributes:
 - cmi_ix_s09           # climate moisture index per month
 
 # Path to pickle file(s) containing additional data. Each pickle file must contain a dictionary
-# with one key for each basin and the value is a time indexed data frame, where each column is a 
+# with one key for each basin and the value is a time indexed data frame, where each column is a
 # feature.
 # Convention: If a column is used as static input, the value to use for specific sample should be in
 # same row (datetime) as the target discharge value.
@@ -485,4 +507,4 @@ nse_scatter_static_features:
 - ari_ix_sav
 
 # --- Regularization settings ---
-weight_decay: 0.01
+weight_decay :
