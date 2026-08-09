@@ -6,7 +6,7 @@
 
 
 # experiment name, used as folder name
-experiment_name: model_1_3_cv
+experiment_name: best_model_1_3_3_adamw
 
 # --- Weights & Biases ---
 use_wandb: true
@@ -25,12 +25,13 @@ test_basin_file: data/basin_lists/israel_test.txt
 # training, validation and test time periods (format = 'YYYY-MM-DD HH:MM:SS') NOTE: nueral hydrology format = 'dd/mm/yyyy'
 # training time periods: list of (possibly disjoint) [start, end] windows.
 # Leave a period's start_date empty to use each basin's own earliest available record.
-# Under cross_validation (below), this is just the fixed/always-train slice
-# (years earlier than the CV pool) - the 2013-2016/2019-2023 years that used
-# to live here now rotate through cross_validation.groups instead.
 train_periods:
   - start_date:
-    end_date: '2008-09-30 07:00:00'
+    end_date: '2010-09-30 07:00:00'
+  - start_date: '2013-10-01 08:00:00'
+    end_date: '2016-09-30 07:00:00'
+  - start_date: '2019-10-01 08:00:00'
+    end_date: '2023-09-30 07:00:00'
 
 validation_start_date: '2010-10-01 08:00:00'
 validation_end_date: '2013-09-30 07:00:00'
@@ -39,15 +40,7 @@ test_start_date: '2016-10-01 08:00:00'
 test_end_date: '2019-09-30 07:00:00'
 
 cross_validation:
-  enabled: true
-  training_rep: 10
-  groups:
-    - [2008, 2009]
-    - [2010, 2011]
-    - [2012, 2013]
-    - [2014, 2015]
-    - [2019, 2020]
-    - [2021, 2022]
+  enabled: false
 
 # if you want to use different (continuous or split) periods per basin (and period) define path to pickle files here.
 per_basin_train_periods_file:
@@ -167,7 +160,7 @@ transformer_nheads: 4
 # ----> General settings <----
 
 # Number of cell states of the LSTM
-hidden_size: 32
+hidden_size: 64
 
 # Initial bias value of the forget gate
 initial_forget_bias: 3
@@ -178,7 +171,7 @@ output_dropout: 0.4
 # --- Training configuration -----------------------------------------------------------------------
 
 # specify optimizer [Adam, AdamW]
-optimizer: Adam
+optimizer: AdamW
 
 # specify loss [MSE, NSE, RMSE]
 loss: MSE
@@ -190,7 +183,7 @@ regularization:
 #- tie_frequencies
 
 # constant learning rate used for the entire training run
-learning_rate: 0.00033630495148045725 #0.001
+learning_rate: 0.001456
 
 # Mini-batch size
 batch_size: 256
@@ -202,7 +195,7 @@ epochs: 50 #20
 target_noise_std: 0
 
 # If a value, clips the gradients during training to that norm.
-clip_gradient_norm: 0.5 #1
+clip_gradient_norm: 2
 
 # Defines the time step frequencies to use (daily, hourly, ...). If used, predict_last_n and seq_length must be dicts.
 # Use pandas frequency strings to define frequencies. Note: the strings need to include values, e.g. '1D' instead of 'D'
@@ -453,7 +446,7 @@ static_attributes:
 - cmi_ix_s09           # climate moisture index per month
 
 # Path to pickle file(s) containing additional data. Each pickle file must contain a dictionary
-# with one key for each basin and the value is a time indexed data frame, where each column is a
+# with one key for each basin and the value is a time indexed data frame, where each column is a 
 # feature.
 # Convention: If a column is used as static input, the value to use for specific sample should be in
 # same row (datetime) as the target discharge value.
@@ -489,7 +482,7 @@ find_flood_events_output: ./data/processed/flood_events/flood_events_all_basins.
 prediction_threshold: 2
 
 # --- Multi-Horizon Forecast Settings (In Hours ahead) ---
-forecast_lead_times: [0, 1, 2, 3]
+forecast_lead_times: [3]
 
 # --- Hydrograph Plot Settings ---
 plot_hydrographs:
@@ -507,4 +500,4 @@ nse_scatter_static_features:
 - ari_ix_sav
 
 # --- Regularization settings ---
-weight_decay :
+weight_decay: 0.001
