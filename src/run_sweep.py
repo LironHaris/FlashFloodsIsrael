@@ -9,10 +9,17 @@ Each call by the sweep agent runs one full training trial:
   4. Metrics are logged to the active W&B run; best checkpoint is saved.
 
 If the base config has cross_validation.enabled: true, each trial mirrors
-train.py's CV branch: total epochs = num_groups * training_rep, and every
-epoch rebuilds its train/val loaders for that epoch's held-out fold via
-dataset.py's build_cv_group_datasets/get_cv_fold_dataloaders - same fold
-rotation, same "no special-casing" checkpoint/early-stop logic as train.py.
+train.py's CV branch for data loading: total epochs = num_groups *
+training_rep, and every epoch rebuilds its train/val loaders for that
+epoch's held-out fold via dataset.py's build_cv_group_datasets/
+get_cv_fold_dataloaders. Scoring differs from train.py though: every fold's
+raw val_loss is logged each epoch (as 'epoch_val_loss', for visibility),
+but the sweep's actual optimization target ('val_loss', matching
+sweep_adamw_cv.yaml's metric.name), best_model.pt checkpointing, early
+stopping, and early-drop all act only at repetition boundaries (once per
+full rotation through all folds), comparing the mean val_loss across that
+rotation - so one unusually hard fold can't dominate the comparison, and
+every fold contributes equally.
 
 Usage:
   wandb sweep configs/sweep.yaml          # register sweep, prints SWEEP_ID
@@ -128,6 +135,7 @@ def run_trial():
     best_val_loss = float('inf')
     patience = config.get('early_stop_patience', 10)
     epochs_no_improve = 0
+    fold_val_losses = []
 
     for epoch in range(epochs):
         if cv_enabled:
@@ -137,14 +145,65 @@ def run_trial():
         train_loss = train_epoch(model, train_loader, optimizer, criterion, device, config)
         val_loss = validate_epoch(model, val_loader, criterion, device, config)
 
-        log_dict = {
+        if cv_enabled:
+            # Log every epoch's raw val_loss for per-fold visibility, but
+            # score/checkpoint/early-stop/early-drop only once per full
+            # rotation through all folds (repetition boundary), against the
+            # mean of that rotation's per-fold losses - so every fold gets
+            # equal weight and one unusually hard fold can't dominate the
+            # comparison the way a single epoch's raw val_loss did.
+            fold_val_losses.append(val_loss)
+            wandb.log({
+                'train_loss': train_loss,
+                'epoch_val_loss': val_loss,
+                'learning_rate': optimizer.param_groups[0]['lr'],
+                'cv/held_out_group': fold + 1,
+            }, step=epoch + 1)
+
+            if (epoch + 1) % num_folds != 0:
+                continue
+
+            mean_val_loss = sum(fold_val_losses) / len(fold_val_losses)
+            repetition = (epoch + 1) // num_folds
+            fold_val_losses = []
+
+            # 'val_loss' is the metric sweep_adamw_cv.yaml's Bayesian search
+            # reads (via W&B's summary-follows-last-log default) - reserved
+            # exclusively for this repetition-mean signal under CV.
+            wandb.log({'val_loss': mean_val_loss, 'cv/repetition': repetition}, step=epoch + 1)
+
+            if mean_val_loss < best_val_loss:
+                best_val_loss = mean_val_loss
+                epochs_no_improve = 0
+                torch.save({
+                    'epoch': epoch + 1,
+                    'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'val_loss': mean_val_loss,
+                }, os.path.join(exp_dir, "best_model.pt"))
+                wandb.run.summary['best_val_loss'] = mean_val_loss
+                wandb.run.summary['best_epoch'] = epoch + 1
+            else:
+                epochs_no_improve += 1
+                if patience is not None and epochs_no_improve >= patience:
+                    print(f"[Early Stop] No mean val_loss improvement for {patience} repetitions. "
+                          f"Stopping after repetition {repetition}.")
+                    break
+
+            if early_drop_enabled and repetition == early_drop_epoch:
+                if is_below_top_k(project, wandb.run.sweep_id, wandb.run.id, best_val_loss, early_drop_top_k):
+                    print(f"[Early Drop] best_val_loss={best_val_loss:.4f} not in top {early_drop_top_k} "
+                          f"after repetition {repetition}. Abandoning this configuration.")
+                    wandb.run.summary['early_dropped'] = True
+                    break
+            continue
+
+        # --- non-CV path: per-epoch scoring, unchanged ---
+        wandb.log({
             'train_loss': train_loss,
             'val_loss': val_loss,
             'learning_rate': optimizer.param_groups[0]['lr'],
-        }
-        if cv_enabled:
-            log_dict['cv/held_out_group'] = fold + 1
-        wandb.log(log_dict, step=epoch + 1)
+        }, step=epoch + 1)
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
