@@ -8,6 +8,12 @@ Each call by the sweep agent runs one full training trial:
   3. Training and validation loops run using shared functions from train.py.
   4. Metrics are logged to the active W&B run; best checkpoint is saved.
 
+If the base config has cross_validation.enabled: true, each trial mirrors
+train.py's CV branch: total epochs = num_groups * training_rep, and every
+epoch rebuilds its train/val loaders for that epoch's held-out fold via
+dataset.py's build_cv_group_datasets/get_cv_fold_dataloaders - same fold
+rotation, same "no special-casing" checkpoint/early-stop logic as train.py.
+
 Usage:
   wandb sweep configs/sweep.yaml          # register sweep, prints SWEEP_ID
   wandb agent <SWEEP_ID>                  # run agent (loops until budget exhausted)
@@ -29,7 +35,7 @@ import wandb
 sys.path.insert(0, os.path.dirname(__file__))
 
 from model import EALSTMModel
-from dataset import get_dataloader
+from dataset import get_dataloader, build_cv_group_datasets, get_cv_fold_dataloaders
 from train import set_seed, train_epoch, validate_epoch, get_loss_criterion, get_tracked_hparams, get_optimizer
 
 
@@ -92,8 +98,24 @@ def run_trial():
     os.makedirs(exp_dir, exist_ok=True)
 
     use_spatial = config.get('use_basin_splits', True)
-    train_loader = get_dataloader(split_type='train', config=config, use_basin_splits=use_spatial)
-    val_loader = get_dataloader(split_type='val', config=config, use_basin_splits=use_spatial)
+
+    cv_config = config.get('cross_validation', {}) or {}
+    cv_enabled = cv_config.get('enabled', False)
+
+    if cv_enabled:
+        num_folds = len(cv_config['groups'])
+        training_rep = cv_config['training_rep']
+        if num_folds < 2:
+            raise ValueError(f"cross_validation.groups must contain at least 2 groups, got {num_folds}.")
+        if training_rep < 1:
+            raise ValueError(f"cross_validation.training_rep must be >= 1, got {training_rep}.")
+        epochs = num_folds * training_rep
+        fixed_train_datasets, group_datasets = build_cv_group_datasets(config, use_basin_splits=use_spatial)
+        train_loader, val_loader = None, None
+    else:
+        epochs = config.get('epochs', 30)
+        train_loader = get_dataloader(split_type='train', config=config, use_basin_splits=use_spatial)
+        val_loader = get_dataloader(split_type='val', config=config, use_basin_splits=use_spatial)
 
     model = EALSTMModel(config).to(device)
 
@@ -104,19 +126,25 @@ def run_trial():
     optimizer = get_optimizer(config, model, sweep_lr)
 
     best_val_loss = float('inf')
-    epochs = config.get('epochs', 30)
     patience = config.get('early_stop_patience', 10)
     epochs_no_improve = 0
 
     for epoch in range(epochs):
+        if cv_enabled:
+            fold = epoch % num_folds
+            train_loader, val_loader = get_cv_fold_dataloaders(fixed_train_datasets, group_datasets, fold, config)
+
         train_loss = train_epoch(model, train_loader, optimizer, criterion, device, config)
         val_loss = validate_epoch(model, val_loader, criterion, device, config)
 
-        wandb.log({
+        log_dict = {
             'train_loss': train_loss,
             'val_loss': val_loss,
             'learning_rate': optimizer.param_groups[0]['lr'],
-        }, step=epoch + 1)
+        }
+        if cv_enabled:
+            log_dict['cv/held_out_group'] = fold + 1
+        wandb.log(log_dict, step=epoch + 1)
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
