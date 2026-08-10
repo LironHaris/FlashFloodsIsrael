@@ -489,7 +489,7 @@ find_flood_events_output: ./data/processed/flood_events/flood_events_all_basins.
 prediction_threshold: 2
 
 # --- Multi-Horizon Forecast Settings (In Hours ahead) ---
-forecast_lead_times: [0, 1, 2, 3]
+forecast_lead_times: [3]
 
 # --- Hydrograph Plot Settings ---
 plot_hydrographs:
