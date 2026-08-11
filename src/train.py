@@ -277,6 +277,7 @@ def main(config_path="configs/config.yml"):
         best_val_loss = float('inf')
     train_loss_history = []
     val_loss_history = []
+    fold_val_losses = []
 
     # Step 4: Core Training and Validation Loop Execution
     if start_epoch >= epochs:
@@ -312,32 +313,68 @@ def main(config_path="configs/config.yml"):
         print(f"  -> Train {metric_label}: {train_loss:.5f}")
         print(f"  -> Val {metric_label}:   {val_loss:.5f}")
 
-        if use_wandb:
-            log_dict = {
-                'train_loss': train_loss,
-                'val_loss': val_loss,
-                'learning_rate': optimizer.param_groups[0]['lr'],
-            }
-            if cv_enabled:
-                log_dict['cv/held_out_group'] = fold + 1
-            wandb.log(log_dict, step=epoch + 1)
-        
         # Part C: Strategic Model Selection (Save Best Weights)
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            best_checkpoint_path = os.path.join(exp_dir, "best_model.pt")
-            torch.save({
-                'epoch': epoch + 1,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'val_loss': val_loss,
-            }, best_checkpoint_path)
-            print(f"Validation improvement detected. Saved as best_model.pt")
+        if cv_enabled:
+            # Score/checkpoint only once per full rotation through all
+            # folds (repetition boundary), against the mean of that
+            # rotation's per-fold val_losses - every fold gets equal
+            # weight and one unusually hard fold can't dominate the
+            # comparison the way a single epoch's raw val_loss did.
+            fold_val_losses.append(val_loss)
             if use_wandb:
-                wandb.run.summary['best_val_loss'] = val_loss
-                wandb.run.summary['best_epoch'] = epoch + 1
-        
-        # Part D: Standard Periodic Backup
+                wandb.log({
+                    'train_loss': train_loss,
+                    'epoch_val_loss': val_loss,
+                    'learning_rate': optimizer.param_groups[0]['lr'],
+                    'cv/held_out_group': fold + 1,
+                }, step=epoch + 1)
+
+            if (epoch + 1) % num_folds == 0:
+                mean_val_loss = sum(fold_val_losses) / len(fold_val_losses)
+                repetition = (epoch + 1) // num_folds
+                fold_val_losses = []
+                print(f"  -> Mean Val {metric_label} across {num_folds} folds "
+                      f"(repetition {repetition}): {mean_val_loss:.5f}")
+
+                if use_wandb:
+                    wandb.log({'val_loss': mean_val_loss, 'cv/repetition': repetition}, step=epoch + 1)
+
+                if mean_val_loss < best_val_loss:
+                    best_val_loss = mean_val_loss
+                    best_checkpoint_path = os.path.join(exp_dir, "best_model.pt")
+                    torch.save({
+                        'epoch': epoch + 1,
+                        'model_state_dict': model.state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        'val_loss': mean_val_loss,
+                    }, best_checkpoint_path)
+                    print(f"Mean validation improvement detected. Saved as best_model.pt")
+                    if use_wandb:
+                        wandb.run.summary['best_val_loss'] = mean_val_loss
+                        wandb.run.summary['best_epoch'] = epoch + 1
+        else:
+            if use_wandb:
+                wandb.log({
+                    'train_loss': train_loss,
+                    'val_loss': val_loss,
+                    'learning_rate': optimizer.param_groups[0]['lr'],
+                }, step=epoch + 1)
+
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                best_checkpoint_path = os.path.join(exp_dir, "best_model.pt")
+                torch.save({
+                    'epoch': epoch + 1,
+                    'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'val_loss': val_loss,
+                }, best_checkpoint_path)
+                print(f"Validation improvement detected. Saved as best_model.pt")
+                if use_wandb:
+                    wandb.run.summary['best_val_loss'] = val_loss
+                    wandb.run.summary['best_epoch'] = epoch + 1
+
+        # Part D: Standard Periodic Backup (every epoch, unaffected by CV)
         if (epoch + 1) % config.get('save_weights_every', 1) == 0:
             checkpoint_path = os.path.join(exp_dir, f"ealstm_epoch_{epoch+1}.pt")
             torch.save({
