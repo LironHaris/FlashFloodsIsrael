@@ -80,7 +80,7 @@ metrics:
 model: ealstm
 
 # path to weight file that should be used as initial weights. Leave empty to start from random weights
-checkpoint_path:
+checkpoint_path: ./runs/best_model_1_3_1_adamw/best_model.pt
 
 # prediction head [regression]. Define the head specific parameters below
 head: regression

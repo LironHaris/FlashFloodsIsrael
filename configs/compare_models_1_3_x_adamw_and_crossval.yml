@@ -1,0 +1,45 @@
+# --- Model Comparison Configuration (model_compare_test.py) --------------------------------------
+# Compares multiple single-lead-time models on the same test split: one NSE CDF
+# with all models overlaid, hydrographs with all models + real flow overlaid,
+# and flood-event TP/FN/FP/TN classified per model over the union of every
+# event any model (or the real flow) produced. Every listed model must have
+# exactly one forecast_lead_times entry - this script does not support
+# multi-lead-time models.
+
+# name used as the comparison's own output folder name
+comparison_name: models_1_3_x_adamw_and_crossval
+
+# where comparison outputs are stored: {run_dir}/{comparison_name}/
+run_dir: ./runs/model_comparisons/
+
+# model config paths to compare - each must share the same test_start_date,
+# test_end_date, test_basin_file basin set, prediction_threshold,
+# return_periods_years, event_merge_gap_hours, visual_buffer_days, and
+# hourly_flow_return_periods_combined (validated at startup; mismatches crash
+# with an error naming the offending configs).
+model_configs:
+- configs/best_model_1_3_0_adamw.yml
+- configs/best_model_1_3_1_adamw.yml
+- configs/best_model_1_3_2_adamw.yml
+- configs/best_model_1_3_3_adamw.yml
+- configs/best_model_1_3_0_adamw_crossval.yml
+- configs/best_model_1_3_1_adamw_crossval.yml
+- configs/best_model_1_3_2_adamw_crossval.yml
+- configs/best_model_1_3_3_adamw_crossval.yml
+
+# display labels for legends/filenames, one per model_configs entry (same
+# order). Optional - defaults to each model's own experiment_name if omitted.
+model_labels:
+- best_model_1_3_0_adamw
+- best_model_1_3_1_adamw
+- best_model_1_3_2_adamw
+- best_model_1_3_3_adamw
+- best_model_1_3_0_adamw_crossval
+- best_model_1_3_1_adamw_crossval
+- best_model_1_3_2_adamw_crossval
+- best_model_1_3_3_adamw_crossval
+
+# --- Weights & Biases (comparison-level; independent of any model config's own wandb settings) ---
+use_wandb: true
+wandb_project: flash-floods-israel
+wandb_api_key: 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
