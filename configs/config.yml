@@ -255,6 +255,12 @@ raw_dynamic_dir: ./data/raw/dynamic
 processed_timeseries_dir: ./data/processed/timeseries
 availability_report_file: ./data/processed/data_availability_report.csv
 flow_quality_check_output_file: ./data/processed/flow_quality_check.csv
+no_dry_years_timeseries_dir: ./data/processed/no_dry_years_timeseries
+dry_years_screening_summary_file: ./data/processed/dry_years_screening_summary.csv
+water_authority_analysis_output_file: ./data/processed/water_authority_data_analyze.csv
+no_dry_years_timeseries_water_authority_dir: ./data/processed/no_dry_years_timeseries_water_authority
+dry_years_water_authority_summary_file: ./data/processed/dry_years_water_authorty.csv
+water_authority_data_gap_file: ./data/processed/water_authority_data_gap.csv
 
 # Long-window cumulative (trailing rolling-sum) rain features computed per basin
 # during preprocess_dynamic_data.py. Each entry becomes one new hourly-resolution

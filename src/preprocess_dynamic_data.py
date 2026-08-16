@@ -47,6 +47,8 @@ import numpy as np
 from tqdm import tqdm
 
 import basin_splits as bs
+import flow_quality_check as fqc
+import screen_dry_years as sdy
 
 def load_config(yaml_path):
     """Load the YAML configuration file."""
@@ -363,6 +365,25 @@ def process_dynamic_data(config):
     included_records = [r for r in availability_records if not r['excluded']]
     basin_lists_dir = os.path.dirname(config['train_basin_file'])
     bs.create_basin_splits(included_records, basin_lists_dir, config['min_combined_availability_pct'])
+
+    # Screen out "dry" hydrological years (flagged as used-but-flow-free by
+    # flow_quality_check's availability-threshold logic) directly from the
+    # processed timeseries just written, so output_dir always ends up
+    # dry-year-screened without a separate manual step.
+    fqc.run_quality_check(
+        config,
+        input_dir=output_dir,
+        output_path=config['flow_quality_check_output_file'],
+        count_suffix='hours',
+        include_missing_index_pct=True,
+    )
+    sdy.screen_years(
+        config,
+        input_dir=output_dir,
+        output_dir=output_dir,
+        quality_check_path=config['flow_quality_check_output_file'],
+        summary_path=config['dry_years_screening_summary_file'],
+    )
 
 if __name__ == "__main__":
     CONFIG_PATH = "configs/config.yml"
