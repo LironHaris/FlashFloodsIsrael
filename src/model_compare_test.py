@@ -223,6 +223,15 @@ def merge_basin_reports(basin, model_configs, model_labels, model_leads):
 
     merged = merged.sort_values('target_time').reset_index(drop=True)
     merged = merged.rename(columns={'target_time': 'timestamp'})
+
+    # Rain is basin ground truth, independent of which model/lead produced a
+    # row, so it's attached by real-world timestamp here (once, on the final
+    # merged frame) rather than threaded through the per-model slim frames
+    # above (which would incorrectly shift it by each model's own lead).
+    rain_df = ph.load_basin_rain_series(basin, model_configs[0])
+    if rain_df is not None:
+        merged = merged.merge(rain_df, on='timestamp', how='left')
+
     return merged
 
 
@@ -394,7 +403,15 @@ def plot_hydrograph_comparison(window_df, model_labels, model_leads, model_color
     ax.set_xlabel('Time (target)', fontsize=10.5, labelpad=8)
     ax.set_ylabel('Discharge (m³/s)', fontsize=10.5, labelpad=8)
     ax.grid(True, linestyle=':', alpha=0.5, color='#b0b0b0')
-    ax.legend(loc='upper right', frameon=True, facecolor='#ffffff', edgecolor='#e2e2e2', fontsize=9)
+
+    if 'rain_mm' in window_df.columns:
+        ax2 = ph.add_rain_overlay(ax, window_df['timestamp'], window_df['rain_mm'])
+        handles1, labels1 = ax.get_legend_handles_labels()
+        handles2, labels2 = ax2.get_legend_handles_labels()
+        ax.legend(handles1 + handles2, labels1 + labels2, loc='upper right',
+                  frameon=True, facecolor='#ffffff', edgecolor='#e2e2e2', fontsize=9)
+    else:
+        ax.legend(loc='upper right', frameon=True, facecolor='#ffffff', edgecolor='#e2e2e2', fontsize=9)
 
     if hourly_xticks:
         ax.xaxis.set_major_locator(mdates.HourLocator(interval=2))

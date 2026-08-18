@@ -237,13 +237,27 @@ def process_dynamic_data(config):
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(os.path.dirname(report_path), exist_ok=True)
 
+    # Basins manually flagged HIS_assessment == 9 in station quality.csv are
+    # excluded entirely, before any per-basin processing - they never get a
+    # processed CSV or contribute to the availability report / basin splits.
+    station_quality_df = pd.read_csv(config['station_quality_file'])
+    his_excluded_basins = set(
+        station_quality_df.loc[station_quality_df['HIS_assessment'] == 9, 'station_id']
+    )
+
     availability_records = []
     csv_files = [f for f in os.listdir(input_dir) if f.endswith('.csv')]
 
     # Run the pipeline on each file
     for file_name in tqdm(csv_files, desc="Processing Gauges", unit="file"):
+        basin_id = file_name.replace('.csv', '')
+        if basin_id in his_excluded_basins:
+            availability_records.append({'gauge_id': basin_id, 'excluded': True})
+            tqdm.write(f"Skipped {file_name}: HIS_assessment == 9 (excluded by station quality review).")
+            continue
+
         raw_df = pd.read_csv(os.path.join(input_dir, file_name))
-        
+
         # Step 1: Resample to hourly resolution
         hourly_df = resample_to_hourly(raw_df)
         

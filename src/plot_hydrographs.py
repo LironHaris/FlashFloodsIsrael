@@ -54,6 +54,53 @@ def _safe_xlim(start, end):
     return start, end
 
 
+def load_basin_rain_series(basin, config):
+    """
+    De-normalized (physical mm/h) hourly rain series for a basin, for use as
+    a hydrograph rain overlay. hourly_precipitation in the processed
+    timeseries is z-score normalized (baked in by preprocess_dynamic_data.py),
+    so this reverses that using the basin's own mean/std already recorded in
+    the availability report: rain_mm = normalized * std + mean.
+    Returns a DataFrame with ['timestamp', 'rain_mm'], or None if the basin
+    has no processed file / no availability record.
+    """
+    processed_path = os.path.join(config['processed_timeseries_dir'], f'{basin}.csv')
+    if not os.path.exists(processed_path):
+        return None
+
+    df = pd.read_csv(processed_path, usecols=['date', 'hourly_precipitation'])
+    df['timestamp'] = pd.to_datetime(df['date'])
+
+    availability_df = pd.read_csv(config['availability_report_file']).set_index('gauge_id')
+    if basin not in availability_df.index:
+        return None
+    mean = availability_df.loc[basin, 'hourly_precipitation_mean']
+    std = availability_df.loc[basin, 'hourly_precipitation_std']
+
+    df['rain_mm'] = df['hourly_precipitation'] * std + mean
+    return df[['timestamp', 'rain_mm']]
+
+
+def add_rain_overlay(ax, timestamps, rain_values):
+    """
+    Draws an hourly rain-intensity hyetograph on an inverted secondary y-axis
+    (0 at top, bars hanging downward) - standard combined hydrograph/hyetograph
+    layout. Bars are scaled to occupy roughly the top quarter of the axis so
+    the discharge line underneath stays clearly readable. Returns the twin
+    axis so callers can merge its legend handles with the primary axis's.
+    """
+    ax2 = ax.twinx()
+    bar_width = 1 / 24  # 1 hour, in matplotlib date units (days)
+    ax2.bar(timestamps, rain_values, width=bar_width, color='#f4a460',
+             alpha=0.7, label='Rain (basin mean)', align='center')
+
+    max_rain = np.nanmax(rain_values) if len(rain_values) else 0
+    top_limit = max(max_rain * 4, 1.0) if np.isfinite(max_rain) else 1.0
+    ax2.set_ylim(top_limit, 0)
+    ax2.set_ylabel('Rain intensity (mm/h)', fontsize=10.5, labelpad=8)
+    return ax2
+
+
 def _build_hydrograph_figure(plot_df, title, config, rp_filter=None, hourly_xticks=False, xlim=None):
     """
     Shared Matplotlib figure builder for hydrograph functions.
@@ -110,7 +157,15 @@ def _build_hydrograph_figure(plot_df, title, config, rp_filter=None, hourly_xtic
     ax.set_xlabel('Time', fontsize=10.5, labelpad=8)
     ax.set_ylabel('Discharge (m³/s)', fontsize=10.5, labelpad=8)
     ax.grid(True, linestyle=':', alpha=0.5, color='#b0b0b0')
-    ax.legend(loc='upper right', frameon=True, facecolor='#ffffff', edgecolor='#e2e2e2', fontsize=9)
+
+    if 'rain_mm' in plot_df.columns:
+        ax2 = add_rain_overlay(ax, plot_df['timestamp'], plot_df['rain_mm'])
+        handles1, labels1 = ax.get_legend_handles_labels()
+        handles2, labels2 = ax2.get_legend_handles_labels()
+        ax.legend(handles1 + handles2, labels1 + labels2, loc='upper right',
+                  frameon=True, facecolor='#ffffff', edgecolor='#e2e2e2', fontsize=9)
+    else:
+        ax.legend(loc='upper right', frameon=True, facecolor='#ffffff', edgecolor='#e2e2e2', fontsize=9)
 
     if hourly_xticks:
         ax.xaxis.set_major_locator(mdates.HourLocator(interval=2))

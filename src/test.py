@@ -194,8 +194,13 @@ def build_and_export_report(basin, output_dir, timestamps, actual_leads_dict, pr
                 df[f'hit_rate_{col_name}_{rp_year}yr_score'] = score
                 df[f'false_alarms_{col_name}_{rp_year}yr'] = false_alarms
 
-    # Enforce chronological sorting to ensure clean hydrograph continuity
+    # Attach de-normalized rain (mm/h) for hydrograph rain overlays
     df['timestamp'] = pd.to_datetime(df['timestamp'])
+    rain_df = ph.load_basin_rain_series(basin, config)
+    if rain_df is not None:
+        df = df.merge(rain_df, on='timestamp', how='left')
+
+    # Enforce chronological sorting to ensure clean hydrograph continuity
     df = df.sort_values(by='timestamp').reset_index(drop=True)
     
     # Commit report to disk
