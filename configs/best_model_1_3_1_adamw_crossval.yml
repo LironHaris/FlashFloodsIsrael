@@ -260,7 +260,7 @@ normalized_static_attributes_file: ./data/processed/static/static_attributes_nor
 
 raw_dynamic_dir: ./data/raw/dynamic
 processed_timeseries_dir: ./data/processed/timeseries
-availability_report_file: ./data/processed/data_availability_report.csv
+availability_report_file: ./data/processed/data quality reports/data_availability_report.csv
 
 # Long-window cumulative (trailing rolling-sum) rain features computed per basin
 # during preprocess_dynamic_data.py. Each entry becomes one new hourly-resolution

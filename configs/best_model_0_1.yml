@@ -6,8 +6,7 @@
 
 
 # experiment name, used as folder name
-experiment_name: best_model_0_1
-
+experiment_name: best_model_0_1_no_dry_years
 # --- Weights & Biases ---
 use_wandb: true
 wandb_project: flash-floods-israel
