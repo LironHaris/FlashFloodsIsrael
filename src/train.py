@@ -269,7 +269,7 @@ def main(config_path="configs/config.yml"):
     # Trackers for saving checkpoints and plotting history
     if start_epoch > 0:
         if cv_enabled:
-            resume_fold = start_epoch % num_folds
+            resume_fold = start_epoch // training_rep
             train_loader, val_loader = get_cv_fold_dataloaders(
                 fixed_train_datasets, group_datasets, resume_fold, config)
         best_val_loss = validate_epoch(model, val_loader, criterion, device, config)
@@ -287,7 +287,7 @@ def main(config_path="configs/config.yml"):
 
     for epoch in range(start_epoch, epochs):
         if cv_enabled:
-            fold = epoch % num_folds
+            fold = epoch // training_rep
             train_loader, val_loader = get_cv_fold_dataloaders(
                 fixed_train_datasets, group_datasets, fold, config)
 
@@ -315,12 +315,14 @@ def main(config_path="configs/config.yml"):
 
         # Part C: Strategic Model Selection (Save Best Weights)
         if cv_enabled:
-            # Score/checkpoint only once per full rotation through all
-            # folds (repetition boundary), against the mean of that
-            # rotation's per-fold val_losses - every fold gets equal
-            # weight and one unusually hard fold can't dominate the
-            # comparison the way a single epoch's raw val_loss did.
-            fold_val_losses.append(val_loss)
+            # Fold is now the outer loop (training_rep consecutive epochs per
+            # fold, then switch) - a full rotation through all folds only
+            # completes once, at the very end of the run, so scoring/
+            # checkpointing happens exactly once there instead of every
+            # num_folds epochs. Each fold's representative score is its last
+            # (most-adapted) epoch's val_loss, captured at that fold's block
+            # boundary - one number per fold, same role a single epoch's
+            # val_loss played per fold under the old per-epoch rotation.
             if use_wandb:
                 wandb.log({
                     'train_loss': train_loss,
@@ -329,15 +331,17 @@ def main(config_path="configs/config.yml"):
                     'cv/held_out_group': fold + 1,
                 }, step=epoch + 1)
 
-            if (epoch + 1) % num_folds == 0:
+            if (epoch + 1) % training_rep == 0:
+                fold_val_losses.append(val_loss)
+
+            if epoch == epochs - 1:
                 mean_val_loss = sum(fold_val_losses) / len(fold_val_losses)
-                repetition = (epoch + 1) // num_folds
                 fold_val_losses = []
                 print(f"  -> Mean Val {metric_label} across {num_folds} folds "
-                      f"(repetition {repetition}): {mean_val_loss:.5f}")
+                      f"(full rotation complete): {mean_val_loss:.5f}")
 
                 if use_wandb:
-                    wandb.log({'val_loss': mean_val_loss, 'cv/repetition': repetition}, step=epoch + 1)
+                    wandb.log({'val_loss': mean_val_loss, 'cv/repetition': 1}, step=epoch + 1)
 
                 if mean_val_loss < best_val_loss:
                     best_val_loss = mean_val_loss

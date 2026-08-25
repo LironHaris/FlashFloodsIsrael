@@ -10,16 +10,28 @@ Each call by the sweep agent runs one full training trial:
 
 If the base config has cross_validation.enabled: true, each trial mirrors
 train.py's CV branch for data loading: total epochs = num_groups *
-training_rep, and every epoch rebuilds its train/val loaders for that
-epoch's held-out fold via dataset.py's build_cv_group_datasets/
-get_cv_fold_dataloaders. Scoring differs from train.py though: every fold's
-raw val_loss is logged each epoch (as 'epoch_val_loss', for visibility),
-but the sweep's actual optimization target ('val_loss', matching
-sweep_adamw_cv.yaml's metric.name), best_model.pt checkpointing, early
-stopping, and early-drop all act only at repetition boundaries (once per
-full rotation through all folds), comparing the mean val_loss across that
-rotation - so one unusually hard fold can't dominate the comparison, and
-every fold contributes equally.
+training_rep, and fold = epoch // training_rep - i.e. fold is the outer
+loop (training_rep consecutive epochs on the same held-out fold, then
+switch), matching train.py. Every epoch rebuilds its train/val loaders for
+that epoch's held-out fold via dataset.py's build_cv_group_datasets/
+get_cv_fold_dataloaders. Scoring differs from train.py's non-CV path
+though: every fold's raw val_loss is logged each epoch (as
+'epoch_val_loss', for visibility), but the sweep's actual optimization
+target ('val_loss', matching sweep_adamw_cv.yaml's metric.name),
+best_model.pt checkpointing, early stopping, and early-drop all act only
+once, at the trial's very last epoch, comparing the mean of each fold's
+representative (last-epoch-of-its-block) val_loss - so one unusually hard
+fold can't dominate the comparison, and every fold contributes equally.
+
+Because fold is now the outer loop, a full rotation through all folds only
+completes once per trial (at the last epoch), so early_stop_patience and
+early_drop_epoch can no longer abandon a bad trial *before* it finishes -
+there is nothing to check until the trial is already done. Per-trial
+pruning before completion is therefore not available under CV anymore;
+keep CV sweep trials cheap instead by pointing FLASHFLOODS_CONFIG at a base
+config with a small training_rep (e.g. 2) for the sweep, and only use a
+larger training_rep (e.g. 10) for the final full training run of whichever
+config the sweep selects.
 
 Usage:
   wandb sweep configs/sweep.yaml          # register sweep, prints SWEEP_ID
@@ -139,20 +151,20 @@ def run_trial():
 
     for epoch in range(epochs):
         if cv_enabled:
-            fold = epoch % num_folds
+            fold = epoch // training_rep
             train_loader, val_loader = get_cv_fold_dataloaders(fixed_train_datasets, group_datasets, fold, config)
 
         train_loss = train_epoch(model, train_loader, optimizer, criterion, device, config)
         val_loss = validate_epoch(model, val_loader, criterion, device, config)
 
         if cv_enabled:
-            # Log every epoch's raw val_loss for per-fold visibility, but
-            # score/checkpoint/early-stop/early-drop only once per full
-            # rotation through all folds (repetition boundary), against the
-            # mean of that rotation's per-fold losses - so every fold gets
-            # equal weight and one unusually hard fold can't dominate the
-            # comparison the way a single epoch's raw val_loss did.
-            fold_val_losses.append(val_loss)
+            # Fold is now the outer loop (training_rep consecutive epochs per
+            # fold, then switch) - a full rotation through all folds only
+            # completes once, at the very end of the trial, so
+            # score/checkpoint/early-stop/early-drop only ever fire there
+            # (see run_trial's docstring: per-trial pruning before
+            # completion no longer applies under CV - keep trials cheap by
+            # using a small training_rep for the sweep instead).
             wandb.log({
                 'train_loss': train_loss,
                 'epoch_val_loss': val_loss,
@@ -160,16 +172,19 @@ def run_trial():
                 'cv/held_out_group': fold + 1,
             }, step=epoch + 1)
 
-            if (epoch + 1) % num_folds != 0:
+            if (epoch + 1) % training_rep == 0:
+                fold_val_losses.append(val_loss)
+
+            if epoch != epochs - 1:
                 continue
 
             mean_val_loss = sum(fold_val_losses) / len(fold_val_losses)
-            repetition = (epoch + 1) // num_folds
+            repetition = 1
             fold_val_losses = []
 
             # 'val_loss' is the metric sweep_adamw_cv.yaml's Bayesian search
             # reads (via W&B's summary-follows-last-log default) - reserved
-            # exclusively for this repetition-mean signal under CV.
+            # exclusively for this full-rotation-mean signal under CV.
             wandb.log({'val_loss': mean_val_loss, 'cv/repetition': repetition}, step=epoch + 1)
 
             if mean_val_loss < best_val_loss:
