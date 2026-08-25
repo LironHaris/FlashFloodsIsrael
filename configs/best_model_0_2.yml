@@ -6,7 +6,7 @@
 
 
 # experiment name, used as folder name
-experiment_name: best_model_0_2
+experiment_name: best_model_0_2_no_dry_years
 
 # --- Weights & Biases ---
 use_wandb: true
@@ -80,7 +80,7 @@ metrics:
 model: ealstm
 
 # path to weight file that should be used as initial weights. Leave empty to start from random weights
-checkpoint_path:
+checkpoint_path: ./runs/best_model_0_2/best_model.pt
 
 # prediction head [regression]. Define the head specific parameters below
 head: regression
@@ -253,7 +253,7 @@ normalized_static_attributes_file: ./data/processed/static/static_attributes_nor
 
 raw_dynamic_dir: ./data/raw/dynamic
 processed_timeseries_dir: ./data/processed/timeseries
-availability_report_file: ./data/processed/data quality reports/data_availability_report.csv
+availability_report_file: ./data/processed/data_availability_report.csv
 
 # Long-window cumulative (trailing rolling-sum) rain features computed per basin
 # during preprocess_dynamic_data.py. Each entry becomes one new hourly-resolution
