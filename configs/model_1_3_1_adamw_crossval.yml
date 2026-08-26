@@ -6,7 +6,7 @@
 
 
 # experiment name, used as folder name
-experiment_name: model_1_3_adamw_cv
+experiment_name: model_1_3_1_adamw_crossval
 
 # --- Weights & Biases ---
 use_wandb: true
