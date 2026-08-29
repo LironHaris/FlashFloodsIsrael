@@ -1,0 +1,510 @@
+# --- Experiment configurations --------------------------------------------------------------------
+# parmeters to change when run on pc or cluster:
+# - device: cuda: 0 on cluster, cpu on pc
+# - num_workers: 16 on cluster, 0 or 4 on pc
+# - data_dir: path to data on cluster vs. pc
+
+
+# experiment name, used as folder name
+experiment_name: best_model_1_3_3_adamw_crossval_no_dry_years
+
+# --- Weights & Biases ---
+use_wandb: true
+wandb_project: flash-floods-israel
+wandb_api_key: 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
+
+# place to store run directory (if empty runs are stored in code_dir/runs/)
+run_dir: ./runs/
+
+# files to specify training, validation and test basins (relative to code root or absolute path)
+use_basin_splits: true
+train_basin_file: data/basin_lists/israel_train.txt
+validation_basin_file: data/basin_lists/israel_val.txt
+test_basin_file: data/basin_lists/israel_test.txt
+
+# training, validation and test time periods (format = 'YYYY-MM-DD HH:MM:SS') NOTE: nueral hydrology format = 'dd/mm/yyyy'
+# training time periods: list of (possibly disjoint) [start, end] windows.
+# Leave a period's start_date empty to use each basin's own earliest available record.
+# Under cross_validation (below), this is just the fixed/always-train slice
+# (years earlier than the CV pool) - the 2013-2016/2019-2023 years that used
+# to live here now rotate through cross_validation.groups instead.
+train_periods:
+  - start_date:
+    end_date: '2008-09-30 07:00:00'
+
+validation_start_date: '2010-10-01 08:00:00'
+validation_end_date: '2013-09-30 07:00:00'
+
+test_start_date: '2016-10-01 08:00:00'
+test_end_date: '2019-09-30 07:00:00'
+
+cross_validation:
+  enabled: true
+  training_rep: 10
+  groups:
+    - [2008, 2009]
+    - [2010, 2011]
+    - [2012, 2013]
+    - [2014, 2015]
+    - [2019, 2020]
+    - [2021, 2022]
+
+# if you want to use different (continuous or split) periods per basin (and period) define path to pickle files here.
+per_basin_train_periods_file:
+per_basin_validation_periods_file:
+per_basin_test_periods_file:
+
+# fixed seed, leave empty to use a random seed
+seed: 42
+
+# which GPU (id) to use [in format of cuda:0, cuda:1 etc, or cpu, mps or None]
+device: cuda:0 #change to cuda:0 before running on cluster or cpu for running on pc
+
+# --- Validation configuration ---------------------------------------------------------------------
+
+# specify after how many epochs to perform validation
+validate_every: 1
+
+# specify how many random basins to use for validation
+validate_n_random_basins: 14
+
+# By default, validation is cached (even is this argument is empty). Set to False, if you do not want to use it.
+cache_validation_data: True
+
+# specify which metrics to calculate during validation (see neuralhydrology.evaluation.metrics)
+# this can either be a list or a dictionary. If a dictionary is used, the inner keys must match the name of the
+# target_variable specified below. Using dicts allows for different metrics per target variable.
+metrics:
+- NSE
+- KGE
+- Alpha-NSE
+- Beta-NSE
+
+# --- Model configuration --------------------------------------------------------------------------
+
+# base model type [cudalstm, customlstm, ealstm, embcudalstm, mtslstm, gru, transformer]
+# (has to match the if statement in modelzoo/__init__.py)
+model: ealstm
+
+# path to weight file that should be used as initial weights. Leave empty to start from random weights
+checkpoint_path:
+
+# prediction head [regression]. Define the head specific parameters below
+head: regression
+
+# ----> Regression settings <----
+output_activation: linear
+
+# ----> Embedding network settings <----
+
+# define embedding network for static inputs
+statics_embedding:
+  type: one_hot #fc
+  # define number of neurons per layer in the FC network used as embedding network
+  hiddens:
+    - 30
+    - 20
+    - 64
+  # activation function of embedding network
+  activation: tanh
+  # dropout applied to embedding network
+  dropout: 0.0
+
+# define embedding network for dynamic inputs
+dynamics_embedding:
+  type: fc
+  # define number of neurons per layer in the FC network used as embedding network
+  hiddens:
+    - 30
+    - 20
+    - 64
+  # activation function of embedding network
+  activation: tanh
+  # dropout applied to embedding network
+  dropout: 0.0
+
+# ----> MTSLSTM settings <----
+
+# use an individual LSTM per frequencies (False) vs. use a single shared LSTM for all frequencies (True)
+shared_mtslstm: False
+
+# how to transfer states from lower to higher frequencies. One of [identity, linear, None].
+transfer_mtslstm_states:
+    h: identity
+    c: identity
+
+# ----> ODE-LSTM settings <----
+# method to use to solve the ODE. One of [euler, rk4, heun]
+ode_method: euler
+
+# number of iterations to break each ODE solving step into.
+ode_num_unfolds: 4
+
+# lowest frequency that will be used to randomly aggregate the first slice of the input sequence.
+# See ODELSTM for more details on the frequency randomization.
+ode_random_freq_lower_bound: 6D
+
+# ----> Transformer settings <----
+
+# number of layers in transformer encoding:
+transformer_nlayers: 4
+
+# type of positional encoding (sum or concatenate)
+transformer_positional_encoding_type: sum
+
+# dimension of feedforward in each encoding layer
+transformer_dim_feedforward: 32
+
+# dropout applied only to the positional encoding
+transformer_positional_dropout: 0.0
+
+# dropout used in the encoding layers
+transformer_dropout: 0
+
+# number of transformer heads
+transformer_nheads: 4
+
+# ----> General settings <----
+
+# Number of cell states of the LSTM
+hidden_size: 256
+
+# Initial bias value of the forget gate
+initial_forget_bias: 3
+
+# Dropout applied to the output of the LSTM
+output_dropout: 0.5
+
+# --- Training configuration -----------------------------------------------------------------------
+
+# specify optimizer [Adam, AdamW]
+optimizer: AdamW
+
+# specify loss [MSE, NSE, RMSE]
+loss: MSE
+nse_epsilon: 0.1
+
+# add regularization terms.
+# Options: tie_frequencies (couples the different frequencies' predictions in an MSE error term)
+regularization:
+#- tie_frequencies
+
+# constant learning rate used for the entire training run
+learning_rate: 0.000122
+
+# Mini-batch size
+batch_size: 512
+
+# Number of training epochs
+epochs: 50 #20
+
+# adds noise with given std to the labels during training. Leave empty or set to 0 if not used.
+target_noise_std: 0
+
+# If a value, clips the gradients during training to that norm.
+clip_gradient_norm: 1
+
+# Defines the time step frequencies to use (daily, hourly, ...). If used, predict_last_n and seq_length must be dicts.
+# Use pandas frequency strings to define frequencies. Note: the strings need to include values, e.g. '1D' instead of 'D'
+# https://pandas.pydata.org/pandas-docs/stable/user_guide/timeseries.html?highlight=frequency#timeseries-offset-aliases
+#use_frequencies:
+#- 1D
+#- 1h
+
+# Subset of frequencies from use_frequencies that are "evaluation-only", i.e., the model will get input and produce
+# output in the frequencies listed here, but they will not be considered in the calculation of loss and regularization
+# terms.
+#no_loss_frequencies:
+#- 1h
+
+# Defines which time steps are used to calculate the loss. Can't be larger than seq_length.
+# If use_frequencies is used, this needs to be a dict mapping each frequency to a predict_last_n-value, else an int.
+predict_last_n: 1
+
+# Length of the input sequence
+# If use_frequencies is used, this needs to be a dict mapping each frequency to a seq_length, else an int.
+seq_length: 72
+
+# Number of parallel workers used in the data pipeline
+num_workers: 2
+
+# Log the training loss every n steps
+log_interval: 5
+
+# If true, writes logging results into tensorboard file
+log_tensorboard: True
+
+# If a value and greater than 0, logs n random basins as figures during validation
+log_n_figures: 2
+
+# Save model weights every n epochs
+save_weights_every: 1
+
+# Store the results of the validation to disk
+save_validation_results: False
+
+
+# --- Data configurations --------------------------------------------------------------------------
+
+# which data set to use [camels_us, camels_gb, global, hourly_camels_us, camels_cl, generic]
+dataset: generic
+
+# Path to data set root
+data_dir: ./data
+
+raw_static_dir: ./data/raw/static
+static_attributes_file: data/processed/static/static_attributes_nh.csv
+processed_static_dir: ./data/processed/static
+feature_stats_file: ./data/processed/static/feature_statistics.csv
+normalized_static_attributes_file: ./data/processed/static/static_attributes_normalized.csv
+
+raw_dynamic_dir: ./data/raw/dynamic
+processed_timeseries_dir: ./data/processed/timeseries
+availability_report_file: ./data/processed/data quality reports/data_availability_report.csv
+
+# Long-window cumulative (trailing rolling-sum) rain features computed per basin
+# during preprocess_dynamic_data.py. Each entry becomes one new hourly-resolution
+# column: value[t] = sum(hourly_precipitation[t-hours+1 : t+1]). The full window must
+# be NaN-free to produce a value (min_periods=hours) - any missing hour inside the
+# window, including insufficient history at a basin's start of record, yields NaN so
+# that window is excluded downstream rather than fabricating a partial sum. Add/remove
+# entries freely; the pipeline loops over this list and is not hardcoded to any count.
+# NOTE: keep 'name' values in sync with dynamic_inputs below - not auto-enforced.
+cumulative_rain_windows:
+  - name: rain_cum_1week
+    hours: 168
+  - name: rain_cum_4weeks
+    hours: 672
+  - name: rain_cum_8weeks
+    hours: 1344
+
+# Minimum % of hours (from basin_start_date through END_DATE) where BOTH Flow_m3_sec
+# and hourly_precipitation are non-NaN, required for a basin to be used at all. Basins
+# below this are excluded from training/val/test entirely (no processed CSV is written),
+# though they still get a flagged row in the availability report for auditing.
+min_combined_availability_pct: 48
+
+# Per-dynamic-input NaN tolerance: the max % of a window's timesteps that may
+# be NaN for that feature before the window is excluded outright. Below the
+# threshold, the window is kept and NaNs in that feature are imputed as
+# literal zero rainfall. Keys not listed here default to
+# train_max_nan_pct=0/eval_max_nan_pct=0 (today's "any NaN excludes"
+# behavior, for both train and val/test). See configs/model_0.yml for an
+# example entry raising eval_max_nan_pct.
+dynamic_input_nan_tolerance:
+  hourly_precipitation:
+    train_max_nan_pct: 0
+    eval_max_nan_pct: 100
+  rain_cum_1week:
+    train_max_nan_pct: 10
+    eval_max_nan_pct: 100
+  rain_cum_4weeks:
+    train_max_nan_pct: 20
+    eval_max_nan_pct: 100
+  rain_cum_8weeks:
+    train_max_nan_pct: 30
+    eval_max_nan_pct: 100
+
+generic_data_config:
+  time_series_path: processed/timeseries/
+
+# Set to True, if train data file should be save to disk. If empty or False, train data is not saved.
+save_train_data: False
+
+# If existing train data file exist, specify path to the pickle file here
+train_data_file:
+
+# Forcing product [daymet, maurer, maurer_extended, nldas, nldas_extended, nldas_hourly]
+# can be either a list of forcings or a single forcing product
+forcings: maurer_extended
+
+# variables to use as time series input (names match the data file column headers)
+# Note: In case of multiple input forcing products, you have to append the forcing product behind
+# each variable. E.g., 'prcp(mm/day)' of the daymet product is 'prcp(mm/day)_daymet'
+# To use different dynamic inputs per frequency, this variable must contain a dict mapping each frequency to its
+# list of variables. E.g., to use precipitation from daymet for daily and from nldas_hourly for hourly predictions:
+#   1D:
+#     - prcp(mm/day)_daymet
+#   1h:
+#     - total_precipitation_nldas_hourly
+dynamic_inputs:
+- hourly_precipitation
+- rain_cum_1week
+- rain_cum_4weeks
+- rain_cum_8weeks
+
+# which columns to use as target
+target_variables:
+- Flow_m3_sec
+
+# clip negative predictions to zero for all variables listed below. Should be a list, even for single variables.
+clip_targets_to_zero:
+- Flow_m3_sec
+
+# Which CAMELS attributes to use. Leave empty if none should be used
+static_attributes:
+- cmi_ix_s02           # climate moisture index per month
+- glc_pc_s20           # land cover extent classes
+- lka_pc_sse           # lake area
+- glc_pc_s22           # land cover extent classes
+- pnv_pc_s10           # potential natural vegitation - % extent of class
+- glc_pc_s15           # land cover extent classes
+- cmi_ix_s12           # climate moisture index per month
+- cmi_ix_s01           # climate moisture index per month
+- pnv_pc_s11           # potential natural vegitation - % extent of class
+- ele_mt_smn           # elevation in sub-basin - min
+- pnv_pc_s14           # potential natural vegitation - % extent of class
+- cmi_ix_s11           # climate moisture index per month
+- riv_tc_usu           # river volume upstream
+- area                 # basin area
+- glc_pc_s14           # land cover extent classes
+- dis_m3_pmn           # annual discharge - min
+- glc_pc_s19           # land cover extent classes
+- for_pc_sse           # forest cover extent
+- glc_pc_s03           # land cover extent classes
+- pre_mm_s09           # precipitation
+- inu_pc_smn           # annual inundation extent - mean annual minimum
+- dis_m3_pyr           # annual discharge - average
+- ero_kh_sav           # soil erosion
+- glc_pc_s18           # land cover extent classes
+- pnv_pc_s12           # potential natural vegitation - % extent of class
+- dis_m3_pmx           # annual discharge - max
+- pnv_pc_s09           # potential natural vegitation - % extent of class
+- glc_pc_s16           # land cover extent classes
+- urb_pc_sse           # urban extent %
+- cmi_ix_s03           # climate moisture index per month
+- glc_pc_s12           # land cover extent classes
+- pre_mm_s05           # precipitation
+- inu_pc_smx           # annual inundation extent - mean annual maximum
+- crp_pc_sse           # cropland extent %
+- rdd_mk_sav           # road density
+- sgr_dk_sav           # stream gradient
+- swc_pc_s10           # soil water content % - monthly
+- pst_pc_sse           # pasture extent %
+- swc_pc_s09           # soil water content % - monthly
+- pre_mm_s04           # precipitation
+- aet_mm_s10           # actual evapotranspiration - monthly
+- aet_mm_s09           # actual evapotranspiration - monthly
+- ari_ix_sav           # aridity index
+- swc_pc_s11           # soil water content % - monthly
+- pre_mm_s10           # precipitation
+- p_mean               # mean daily precipitation
+- low_prec_dur         # Average duration of low precipitation events
+- ele_mt_sav           # elevation in sub-basin - average
+- swc_pc_s12           # soil water content % - monthly
+- pre_mm_s01           # precipitation
+- aet_mm_s11           # actual evapotranspiration - monthly
+- pre_mm_s02           # precipitation
+- swc_pc_s05           # soil water content % - monthly
+- kar_pc_sse           # karst area extent
+- swc_pc_syr           # soil water content % - annual
+- seasonality          # Moisture index seasonality in range [0, 2], where 0 indicates no changes in the water/energy budget throughout the year and 2 indicates a change from fully arid to fully humid
+- pre_mm_syr           # precipitation
+- pre_mm_s12           # precipitation
+- swc_pc_s01           # soil water content % - monthly
+- aet_mm_s12           # actual evapotranspiration - monthly
+- swc_pc_s02           # soil water content % - monthly
+- run_mm_syr           # land surface runoff
+- pre_mm_s11           # precipitation
+- swc_pc_s04           # soil water content % - monthly
+- swc_pc_s03           # soil water content % - monthly
+- pre_mm_s03           # precipitation
+- aet_mm_s05           # actual evapotranspiration - monthly
+- aet_mm_syr           # actual evapotranspiration - annual
+- aet_mm_s01           # actual evapotranspiration - monthly
+- ele_mt_smx           # elevation in sub-basin - max
+- aet_mm_s02           # actual evapotranspiration - monthly
+- aet_mm_s04           # actual evapotranspiration - monthly
+- aet_mm_s03           # actual evapotranspiration - monthly
+- slp_dg_sav           # terrain slope
+- hft_ix_s09           # human footprint index (2009)
+- gwt_cm_sav           # groundwater table depth
+- cmi_ix_syr           # climate moisture index - annual
+- moisture_index       # moisture index
+- pet_mean             # potential evapotranspiration
+- tmp_dc_s01           # air temperature - monthly
+#- cly_pc_sav           # clay fraction in soil %
+- tmp_dc_s02           # air temperature - monthly
+- cmi_ix_s04           # climate moisture index per month
+- high_prec_freq       # Frequency of high precipitation days, where precipitation ≥5 times mean daily precipitation
+- pet_mm_s01           # potential evapotranspiration - monthly
+- tmp_dc_s03           # air temperature - monthly
+- tmp_dc_s12           # air temperature - monthly
+- pet_mm_s02           # potential evapotranspiration - monthly
+- pet_mm_s12           # potential evapotranspiration - monthly
+- pet_mm_s03           # potential evapotranspiration - monthly
+- tmp_dc_s04           # air temperature - monthly
+- pet_mm_s11           # potential evapotranspiration - monthly
+#- snd_pc_sav           # sand fraction in soil
+- tmp_dc_s11           # air temperature - monthly
+- cmi_ix_s10           # climate moisture index per month
+- pet_mm_s04           # potential evapotranspiration - monthly
+- pet_mm_syr           # potential evapotranspiration - annual mean
+- tmp_dc_syr           # air temperature - yearly average
+- pet_mm_s05           # potential evapotranspiration - monthly
+- tmp_dc_s05           # air temperature - monthly
+- pet_mm_s10           # potential evapotranspiration - monthly
+- pet_mm_s09           # potential evapotranspiration - monthly
+- low_prec_freq        # Frequency of low precipitation days, where precipitation
+- tmp_dc_s10           # air temperature - monthly
+- tmp_dc_s09           # air temperature - monthly
+- cmi_ix_s05           # climate moisture index per month
+- high_prec_dur        # Average duration of high precipitation events (number of consecutive days where precipitation ≥5 times mean daily precipitation
+- cmi_ix_s09           # climate moisture index per month
+
+# Path to pickle file(s) containing additional data. Each pickle file must contain a dictionary
+# with one key for each basin and the value is a time indexed data frame, where each column is a
+# feature.
+# Convention: If a column is used as static input, the value to use for specific sample should be in
+# same row (datetime) as the target discharge value.
+additional_feature_files:
+
+# columns of the data frame to use as (additional) "static" inputs for each sample. Must be present in
+# the above linked additional feature files. These values will be used as static inputs, but they can evolve over time.
+# Leave empty to not use any.
+evolving_attributes:
+
+# whether to use basin id one hot encoding as (additional) static input
+use_basin_id_encoding: False
+
+# --- PCA Configurations ---------------------------------------------------------------------------
+pca_output_dir: ./data/processed/pca_results
+pca_variance_threshold: 0.95
+
+# --- Extreme Value Analysis (Return Periods) ------------------------------------------------------
+return_periods_years: [2, 5]
+return_periods_output_dir: ./data/processed/return_periods
+hourly_flow_return_periods_combined : ./data/processed/return_periods/new_return_periods.csv
+hydro_year_start_month: 10 # October
+min_years_for_gev: 5       # Minimum data points (years) required to fit GEV stably
+gev_plausibility_scalar: 10 # Warn if the theoretical value at the largest configured return period exceeds this multiple of the max observed annual maximum
+visual_buffer_days: 1
+event_merge_gap_hours: 6
+find_flood_events_output: ./data/processed/flood_events/flood_events_all_basins.csv
+
+# Return period (years) used to select which flood events get compared/plotted as
+# TP/FP/FN (see compare_flood_events.py). The underlying event scans still cover every
+# configured return_periods_years/forecast_lead_times for analysis; this only controls
+# which single RP's events become the comparison plots.
+prediction_threshold: 2
+
+# --- Multi-Horizon Forecast Settings (In Hours ahead) ---
+forecast_lead_times: [3]
+
+# --- Hydrograph Plot Settings ---
+plot_hydrographs:
+  basin_id: "il_04"
+  start_time: "2022-01-16 04:00:00"
+  end_time: "2022-01-16 16:00:00"
+
+# --- Results Analysis Settings (analyze_results.py) ---
+# Static attribute(s) to color analyze_results.py's NSE-by-basin scatter plot by;
+# one plot is produced per feature per forecast lead time. Looked up first in
+# static_attributes_file, then normalized_static_attributes_file (so PCA
+# components like PC1/PC2 resolve correctly for model_0_pca.yml).
+nse_scatter_static_features:
+- area
+- ari_ix_sav
+
+# --- Regularization settings ---
+weight_decay: 0.1
