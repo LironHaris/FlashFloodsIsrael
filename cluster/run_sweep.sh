@@ -26,6 +26,13 @@ SWEEP_ID="${1:?Usage: sbatch run_sweep.sh <sweep_id> [config_path] [sweep_config
 export FLASHFLOODS_CONFIG="${2:-configs/config.yml}"
 export FLASHFLOODS_SWEEP_CONFIG="${3:-configs/sweep.yaml}"
 
+# 4b. Authenticate via WANDB_API_KEY (env var) instead of ~/.netrc - dozens of
+# these jobs can start within the same second, and concurrent `wandb` CLI
+# processes writing to the same shared-HOME ~/.netrc can corrupt it (seen in
+# practice: null-byte garbage). Reading the key straight out of the config
+# and exporting it means wandb never touches ~/.netrc at all.
+export WANDB_API_KEY="$(python -c "import yaml,sys; print(yaml.safe_load(open(sys.argv[1], encoding='utf-8'))['wandb_api_key'])" "$FLASHFLOODS_CONFIG")"
+
 # 5. ���� �-Agent
 wandb agent liron-haris-hebrew-university-of-jerusalem/flash-floods-israel/$SWEEP_ID
 
