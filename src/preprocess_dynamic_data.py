@@ -49,6 +49,7 @@ from tqdm import tqdm
 import basin_splits as bs
 import flow_quality_check as fqc
 import screen_dry_years as sdy
+import nan_flow_days as nfd
 
 def load_config(yaml_path):
     """Load the YAML configuration file."""
@@ -317,59 +318,30 @@ def process_dynamic_data(config):
         # Step 5: Remove NaN stretches longer than seq_length (untrainable dead weight)
         clean_df, n_dropped = drop_long_flow_nan_stretches(clean_df, seq_length=config['seq_length'])
 
-        # Compute per-basin flow mean/std from the training periods only (np.nanmean/nanstd ignore
-        # NaN entries). These are fixed per-basin normalization constants used to z-score the flow
-        # target in dataset.py, so they must reflect train-period variability, not the full
-        # train+val+test series. Both are drawn from the same slice/fallback branch so they always
-        # describe the same underlying sample.
-        train_slice = pd.concat([clean_df.loc[start:end] for start, end in train_bounds])
-        flow_mean = float(np.nanmean(train_slice['Flow_m3_sec'].values))
-        flow_std = float(np.nanstd(train_slice['Flow_m3_sec'].values))
-        if not np.isfinite(flow_std) or flow_std == 0.0:
-            flow_mean = float(np.nanmean(clean_df['Flow_m3_sec'].values))
-            flow_std = float(np.nanstd(clean_df['Flow_m3_sec'].values))
-
-        # Compute per-basin mean/std for hourly_precipitation and every configured
-        # cumulative-rain feature, each from the same training-period slice. Unlike flow,
-        # these features have no downstream use for raw values, so the z-score is baked
-        # directly into the saved series below rather than applied on-the-fly in dataset.py.
-        rain_feature_names = ['hourly_precipitation'] + [w['name'] for w in config['cumulative_rain_windows']]
-        rain_norm_stats = {}
-        for feature_name in rain_feature_names:
-            feature_mean = float(np.nanmean(train_slice[feature_name].values))
-            feature_std = float(np.nanstd(train_slice[feature_name].values))
-            if not np.isfinite(feature_std) or feature_std == 0.0:
-                feature_mean = float(np.nanmean(clean_df[feature_name].values))
-                feature_std = float(np.nanstd(clean_df[feature_name].values))
-
-            # Bake the normalization into the series that gets saved to disk
-            clean_df[feature_name] = (clean_df[feature_name] - feature_mean) / feature_std
-
-            rain_norm_stats[f'{feature_name}_mean'] = feature_mean
-            rain_norm_stats[f'{feature_name}_std'] = feature_std
-
-        # Record data for the summary report
+        # Normalization now happens in Pass 3, after dry-year and
+        # nan_flow_days screening (see below) - baking it in here, before
+        # those rows get dropped, would make the stats reflect data that no
+        # longer exists in the final file. Save the unnormalized,
+        # screening-pending series for now; Pass 3 re-reads and finalizes it.
         availability_records.append({
             'gauge_id': file_name.replace('.csv', ''),
             'combined_availability_pct_train': combined_train,
             'combined_availability_pct_val': combined_val,
             'combined_availability_pct_test': combined_test,
             'excluded': False,
-            'flow_mean': flow_mean,
-            'flow_std': flow_std,
-            **rain_norm_stats,
         })
 
-        # Save the processed CSV file
         output_path = os.path.join(output_dir, file_name)
         clean_df.to_csv(output_path, index_label='date')
 
-        tqdm.write(f"Done {file_name}: Processed from {basin_start_date} to {END_DATE}. {flow_available:.2f}% flow data. Dropped {n_dropped} rows (long NaN stretches).")
+        tqdm.write(f"Pass 1 done {file_name}: Processed from {basin_start_date} to {END_DATE}. {flow_available:.2f}% flow data. Dropped {n_dropped} rows (long NaN stretches).")
 
-    # Create and save the final availability report
+    # Write the intermediate availability report (combined_availability_pct_*
+    # only - flow/rain normalization stats are added in Pass 3 below). This
+    # must exist on disk before Pass 2, since fqc.run_quality_check's
+    # is_year_used reads combined_availability_pct_* from this file.
     report_df = pd.DataFrame(availability_records)
     report_df.to_csv(report_path, index=False)
-    print(f"\nSummary report saved to: {report_path}")
 
     # Regenerate the basin split lists from exactly the basins that passed the
     # availability gate this run, so israel_train/val/test.txt can never
@@ -380,10 +352,9 @@ def process_dynamic_data(config):
     basin_lists_dir = os.path.dirname(config['train_basin_file'])
     bs.create_basin_splits(included_records, basin_lists_dir, config['min_combined_availability_pct'])
 
-    # Screen out "dry" hydrological years (flagged as used-but-flow-free by
-    # flow_quality_check's availability-threshold logic) directly from the
-    # processed timeseries just written, so output_dir always ends up
-    # dry-year-screened without a separate manual step.
+    # Pass 2: screen out "dry" hydrological years (flagged as used-but-flow-free
+    # by flow_quality_check's availability-threshold logic) directly from the
+    # processed timeseries just written - in place, before normalization.
     fqc.run_quality_check(
         config,
         input_dir=output_dir,
@@ -398,6 +369,61 @@ def process_dynamic_data(config):
         quality_check_path=config['flow_quality_check_output_file'],
         summary_path=config['dry_years_screening_summary_file'],
     )
+
+    # Pass 2b: screen out days flagged as missing/NaN in the raw
+    # water-authority daily record (nan_flow_days.py), same in-place pattern.
+    # Basins outside the train+val+test union have no nan_flow_days file and
+    # pass through unfiltered.
+    nfd.screen_nan_flow_days(
+        input_dir=output_dir,
+        output_dir=output_dir,
+        nan_flow_days_dir=config['nan_flow_days_output_dir'],
+    )
+
+    # Pass 3: now that every excluded row (long NaN stretches, dry years,
+    # nan_flow_days) is gone, recompute normalization from what actually
+    # remains and bake it in - same formulas as before, just run against the
+    # fully-screened data instead of the pre-screening data.
+    train_bounds = [(p.get('start_date'), p['end_date']) for p in config['train_periods']]
+    rain_feature_names = ['hourly_precipitation'] + [w['name'] for w in config['cumulative_rain_windows']]
+    records_by_basin = {r['gauge_id']: r for r in included_records}
+
+    for basin_id in tqdm(records_by_basin, desc="Pass 3: Normalizing", unit="basin"):
+        file_path = os.path.join(output_dir, f"{basin_id}.csv")
+        clean_df = pd.read_csv(file_path, index_col='date', parse_dates=True)
+
+        train_slice = pd.concat([clean_df.loc[start:end] for start, end in train_bounds])
+        flow_mean = float(np.nanmean(train_slice['Flow_m3_sec'].values))
+        flow_std = float(np.nanstd(train_slice['Flow_m3_sec'].values))
+        if not np.isfinite(flow_std) or flow_std == 0.0:
+            flow_mean = float(np.nanmean(clean_df['Flow_m3_sec'].values))
+            flow_std = float(np.nanstd(clean_df['Flow_m3_sec'].values))
+
+        rain_norm_stats = {}
+        for feature_name in rain_feature_names:
+            feature_mean = float(np.nanmean(train_slice[feature_name].values))
+            feature_std = float(np.nanstd(train_slice[feature_name].values))
+            if not np.isfinite(feature_std) or feature_std == 0.0:
+                feature_mean = float(np.nanmean(clean_df[feature_name].values))
+                feature_std = float(np.nanstd(clean_df[feature_name].values))
+
+            clean_df[feature_name] = (clean_df[feature_name] - feature_mean) / feature_std
+
+            rain_norm_stats[f'{feature_name}_mean'] = feature_mean
+            rain_norm_stats[f'{feature_name}_std'] = feature_std
+
+        clean_df.to_csv(file_path, index_label='date')
+
+        record = records_by_basin[basin_id]
+        record['flow_mean'] = flow_mean
+        record['flow_std'] = flow_std
+        record.update(rain_norm_stats)
+
+    # Final availability report, now with flow/rain normalization stats
+    # computed from the fully-screened data.
+    report_df = pd.DataFrame(availability_records)
+    report_df.to_csv(report_path, index=False)
+    print(f"\nSummary report saved to: {report_path}")
 
 if __name__ == "__main__":
     CONFIG_PATH = "configs/config.yml"
