@@ -18,6 +18,12 @@ import os
 import matplotlib.pyplot as plt
 import pandas as pd
 
+try:
+    import wandb
+    WANDB_AVAILABLE = True
+except ImportError:
+    WANDB_AVAILABLE = False
+
 from model_compare_test import (
     load_config, validate_comparable, run_single_model_eval,
     merge_basin_reports, cluster_events, classify_clusters,
@@ -31,7 +37,8 @@ def _cluster_hydro_year(core_start, hydro_year_start_month):
     return int(get_hydrological_year(pd.DatetimeIndex([core_start]), start_month=hydro_year_start_month)[0])
 
 
-def find_and_plot_events(model_configs, model_labels, model_leads, shared_basins, years, output_dir):
+def find_and_plot_events(model_configs, model_labels, model_leads, shared_basins, years, output_dir,
+                          use_wandb=False):
     """
     Per basin: merges real+predicted+rain (merge_basin_reports), scans real
     and every model's predicted flood events, unions overlapping events
@@ -113,6 +120,8 @@ def find_and_plot_events(model_configs, model_labels, model_leads, shared_basins
             fig = plot_hydrograph_comparison(window_df, model_labels, model_leads, model_color_map,
                                               title, output_dir, filename, event_labels=event_labels,
                                               hourly_xticks=True, xlim=(padded_start, padded_end))
+            if use_wandb:
+                wandb.log({f"events_by_year/{basin}/{date_tag}": wandb.Image(fig)})
             plt.close(fig)
             n_plotted += 1
             print(f"  {basin} {date_tag}: saved {filename}")
@@ -147,6 +156,17 @@ def main(comparison_config_path, years):
                                comparison_config['comparison_name'])
     os.makedirs(output_dir, exist_ok=True)
 
+    use_wandb = comparison_config.get('use_wandb', False) and WANDB_AVAILABLE
+    if use_wandb:
+        api_key = comparison_config.get('wandb_api_key')
+        if api_key:
+            wandb.login(key=api_key)
+        wandb.init(
+            project=comparison_config.get('wandb_project', 'flash-floods-israel'),
+            name=f"{comparison_config['comparison_name']}_events_by_year_{'_'.join(str(y) for y in sorted(set(years)))}",
+            config={**comparison_config, 'years': years},
+        )
+
     # Load each checkpoint and run inference, writing/refreshing each
     # model's own visual_report_basin_*.csv - same step model_compare_test.py
     # always performs (no skip-if-exists caching, to avoid stale results).
@@ -155,7 +175,11 @@ def main(comparison_config_path, years):
         print(f"  Evaluating '{label}' ({config['experiment_name']})...")
         run_single_model_eval(config, shared_basins)
 
-    find_and_plot_events(model_configs, model_labels, model_leads, shared_basins, years, output_dir)
+    find_and_plot_events(model_configs, model_labels, model_leads, shared_basins, years, output_dir,
+                          use_wandb=use_wandb)
+
+    if use_wandb:
+        wandb.finish()
 
     print(f"\n[INFO] Done. Outputs in: {output_dir}")
 
