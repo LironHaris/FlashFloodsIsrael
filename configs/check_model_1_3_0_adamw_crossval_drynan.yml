@@ -1,0 +1,24 @@
+# --- Single-Model Event/Hydrograph Plot Configuration (plot_events_by_year.py) ---
+# Single-entry "comparison" config - plot_events_by_year.py reuses
+# model_compare_test.py's comparison-config format, which works unchanged
+# for exactly one model. Scans real/predicted flood events for this model
+# and plots observed-vs-predicted hydrographs (with rain overlay) for
+# whichever hydrological year(s) are passed via --years.
+
+# name used as this run's own output folder name
+comparison_name: check_model_1_3_0_adamw_crossval_drynan
+
+# where outputs are stored: {run_dir}/{comparison_name}/
+run_dir: ./runs/model_comparisons/
+
+# single model to evaluate/plot
+model_configs:
+- configs/best_model_1_3_0_adamw_crossval_drynan.yml
+
+model_labels:
+- best_model_1_3_0_adamw_crossval_drynan
+
+# --- Weights & Biases (independent of any model config's own wandb settings) ---
+use_wandb: true
+wandb_project: flash-floods-israel
+wandb_api_key: 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
