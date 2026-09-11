@@ -298,18 +298,16 @@ def _consecutive_year_runs(years):
 
 def build_year_range_period(start_year, end_year, hydro_year_start_month=10):
     """
-    (start_date, end_date) datetime-string tuple spanning start_year through
-    end_year inclusive, in this project's user-facing convention: "year N"
-    starts Oct 1 of N and runs through Sep 30 of N+1 (e.g. a single-year
-    range 2016 = '2016-10-01 08:00:00' -> '2017-09-30 07:00:00'; a
-    multi-year range 2013-2015 = '2013-10-01 08:00:00' -> '2016-09-30
-    07:00:00') - matches the literal digits already used in every config's
-    train_periods/validation/test date bounds (verified against
-    configs/best_model_0_0.yml's 2013-2015 and 2019-2022 train_periods
-    entries and its 2016-2018 test span).
+    (start_date, end_date) datetime-string tuple spanning hydrological years
+    start_year through end_year inclusive, matching this project's other
+    hydro-year convention (get_hydrological_year in flow_quality_check.py):
+    hydro-year N = Oct 1 of (N-1) through Sep 30 of N. E.g. a single-year
+    range 2016 = '2015-10-01 08:00:00' -> '2016-09-30 07:00:00'; a
+    multi-year range 2013-2015 = '2012-10-01 08:00:00' -> '2015-09-30
+    07:00:00'.
     """
-    start = pd.Timestamp(year=start_year, month=hydro_year_start_month, day=1, hour=8)
-    next_start = pd.Timestamp(year=end_year + 1, month=hydro_year_start_month, day=1, hour=8)
+    start = pd.Timestamp(year=start_year - 1, month=hydro_year_start_month, day=1, hour=8)
+    next_start = pd.Timestamp(year=end_year, month=hydro_year_start_month, day=1, hour=8)
     end = next_start - pd.Timedelta(days=1, hours=1)
     return start.strftime('%Y-%m-%d %H:%M:%S'), end.strftime('%Y-%m-%d %H:%M:%S')
 

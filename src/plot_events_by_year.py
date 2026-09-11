@@ -1,15 +1,17 @@
 """
 Module: plot_events_by_year.py
 Description: Year-scoped flood-event hydrograph plotter. Loads one or more
-             trained models' checkpoints, runs inference, scans real and
-             predicted flood events (the same union/classification logic
-             model_compare_test.py uses for its full-test-period comparison),
-             restricts them to the requested hydrological year(s), and plots
-             an observed-vs-predicted hydrograph (with rain overlay and RP
-             threshold lines) for each surviving event. Works for a single
-             model or many - reuses model_compare_test.py's building blocks
-             unchanged, just adds the year filter and a date-named plotting
-             loop instead of scanning/plotting the whole test period.
+             trained models' checkpoints and runs inference over exactly the
+             requested hydrological year(s) - inside or outside the model's
+             configured test split, contiguous or disjoint - then scans real
+             and predicted flood events (the same union/classification logic
+             model_compare_test.py uses for its full-test-period comparison)
+             and plots an observed-vs-predicted hydrograph (with rain
+             overlay and RP threshold lines) for each event found. Works for
+             a single model or many. Evaluation writes to a separate
+             {experiment_name}_custom_period output location, so it never
+             overwrites the model's real (configured-test-split)
+             visual_report_basin_*.csv that other scripts depend on.
 """
 
 import argparse
@@ -17,6 +19,7 @@ import os
 
 import matplotlib.pyplot as plt
 import pandas as pd
+from torch.utils.data import ConcatDataset
 
 try:
     import wandb
@@ -24,8 +27,11 @@ try:
 except ImportError:
     WANDB_AVAILABLE = False
 
+import dataset
+from quick_test import setup_evaluation_from_checkpoint
+from test import evaluate_basin_sequences, build_and_export_report
 from model_compare_test import (
-    load_config, validate_comparable, run_single_model_eval,
+    load_config, validate_comparable,
     merge_basin_reports, cluster_events, classify_clusters,
     build_model_color_map, plot_hydrograph_comparison,
 )
@@ -37,13 +43,84 @@ def _cluster_hydro_year(core_start, hydro_year_start_month):
     return int(get_hydrological_year(pd.DatetimeIndex([core_start]), start_month=hydro_year_start_month)[0])
 
 
-def find_and_plot_events(model_configs, model_labels, model_leads, shared_basins, years, output_dir,
+class _PeriodBasinDataset:
+    """
+    Minimal IsraelBasinsDataset-compatible wrapper - sample_basin_mappings,
+    sample_date_mappings, __getitem__/__len__ - built directly from a list
+    of SingleBasinDataset objects over caller-supplied periods. Bypasses
+    IsraelBasinsDataset's hardcoded train/val/test split-type restriction
+    (dataset.py:_get_split_bounds_and_config only knows those three) without
+    touching dataset.py: builds the exact same tracking arrays
+    IsraelBasinsDataset.__init__ does, from the same basin_datasets shape,
+    just fed a custom periods list instead of one derived from a fixed split.
+    """
+    def __init__(self, basin_datasets):
+        self.basin_datasets = basin_datasets
+        self.concat_dataset = ConcatDataset(basin_datasets)
+        self.sample_basin_mappings = []
+        self.sample_date_mappings = []
+        for ds in basin_datasets:
+            for i in range(len(ds)):
+                self.sample_basin_mappings.append(ds.gauge_id)
+                actual_idx = ds.valid_indices[i]
+                target_idx = actual_idx + ds.seq_length - 1
+                self.sample_date_mappings.append(ds.dates[target_idx])
+
+    def __len__(self):
+        return len(self.concat_dataset)
+
+    def __getitem__(self, idx):
+        return self.concat_dataset[idx]
+
+
+def evaluate_model_over_years(config, basins, periods):
+    """
+    Loads config['checkpoint_path'] and runs inference over exactly the
+    given periods - not the configured test split. Mirrors
+    model_compare_test.run_single_model_eval, swapping
+    IsraelBasinsDataset(split_type='test', ...) for a dataset built directly
+    via dataset._build_basin_datasets over custom periods, wrapped in
+    _PeriodBasinDataset. split_type='test' passed to _build_basin_datasets
+    only selects eval_max_nan_pct tolerance inside SingleBasinDataset - it
+    doesn't tie this evaluation to the configured test window. Always
+    recomputes (no skip-if-exists caching), same convention as
+    run_single_model_eval. Returns exp_dir.
+    """
+    model, device, exp_dir = setup_evaluation_from_checkpoint(config)
+    output_dir = os.path.join(exp_dir, "visualization_reports")
+    os.makedirs(output_dir, exist_ok=True)
+
+    basin_datasets = dataset._build_basin_datasets(basins, config, periods, split_type='test')
+    period_dataset = _PeriodBasinDataset(basin_datasets)
+
+    for basin in basins:
+        basin_data = evaluate_basin_sequences(basin, period_dataset, model, device, config)
+        if basin_data is None:
+            print(f"  [WARNING] No windows found for basin {basin} ({config['experiment_name']}) "
+                  f"in the requested period(s). Skipping.")
+            continue
+        timestamps, actual_leads_dict, pred_leads_dict = basin_data
+        build_and_export_report(basin, output_dir, timestamps, actual_leads_dict, pred_leads_dict, config)
+
+    return exp_dir
+
+
+def find_and_plot_events(model_configs, model_labels, model_leads, shared_basins, years, periods, output_dir,
                           use_wandb=False):
     """
-    Per basin: merges real+predicted+rain (merge_basin_reports), scans real
-    and every model's predicted flood events, unions overlapping events
-    across sources (cluster_events), keeps only clusters whose core_start
-    falls in one of the requested hydrological years, classifies the
+    Per basin: merges real+predicted+rain (merge_basin_reports). Scans real
+    and every model's predicted flood events separately within each
+    requested period-group (periods, from dataset.build_year_periods) -
+    never across a real time gap between disjoint requested years, so
+    _scan_series_for_events's consecutive-row grouping can't merge two
+    events that are actually years apart into one spurious cluster. A
+    genuinely contiguous multi-year request is still exactly one period
+    here, so an event straddling e.g. a Dec/Jan boundary within it is still
+    scanned as one event. Unions overlapping events across sources
+    (cluster_events - safe to combine across period-groups since disjoint
+    periods can never produce overlapping unpadded windows), keeps only
+    clusters whose core_start falls in one of the requested hydrological
+    years (a cheap, now mostly-redundant defensive check), classifies the
     survivors TP/FN/FP/TN per model (classify_clusters), and plots one
     hydrograph per surviving cluster. Writes a companion CSV of exactly the
     plotted events. Returns the number of hydrographs plotted.
@@ -53,6 +130,7 @@ def find_and_plot_events(model_configs, model_labels, model_leads, shared_basins
     merge_gap_hours = model_configs[0].get('event_merge_gap_hours', 0)
     hydro_year_start_month = model_configs[0].get('hydro_year_start_month', 10)
     years = set(years)
+    period_bounds = [(pd.Timestamp(start), pd.Timestamp(end)) for start, end in periods]
 
     model_color_map = build_model_color_map(model_labels)
     all_rows = []
@@ -69,23 +147,28 @@ def find_and_plot_events(model_configs, model_labels, model_leads, shared_basins
             continue
 
         tagged = []
-        real_events = ffe._scan_series_for_events(merged_df, 'actual_flow', threshold_value,
-                                                    buffer_days, merge_gap_hours)
-        for ev in real_events:
-            tagged.append({**ev, 'source': 'real',
-                            'core_start': pd.to_datetime(ev['core_start']),
-                            'core_end': pd.to_datetime(ev['core_end'])})
-
-        for label in model_labels:
-            col = f'pred__{label}'
-            if col not in merged_df.columns:
+        for period_start, period_end in period_bounds:
+            period_df = merged_df[(merged_df['timestamp'] >= period_start) & (merged_df['timestamp'] <= period_end)]
+            if period_df.empty:
                 continue
-            pred_events = ffe._scan_series_for_events(merged_df, col, threshold_value,
+
+            real_events = ffe._scan_series_for_events(period_df, 'actual_flow', threshold_value,
                                                         buffer_days, merge_gap_hours)
-            for ev in pred_events:
-                tagged.append({**ev, 'source': label,
+            for ev in real_events:
+                tagged.append({**ev, 'source': 'real',
                                 'core_start': pd.to_datetime(ev['core_start']),
                                 'core_end': pd.to_datetime(ev['core_end'])})
+
+            for label in model_labels:
+                col = f'pred__{label}'
+                if col not in period_df.columns:
+                    continue
+                pred_events = ffe._scan_series_for_events(period_df, col, threshold_value,
+                                                            buffer_days, merge_gap_hours)
+                for ev in pred_events:
+                    tagged.append({**ev, 'source': label,
+                                    'core_start': pd.to_datetime(ev['core_start']),
+                                    'core_end': pd.to_datetime(ev['core_end'])})
 
         if not tagged:
             continue
@@ -152,6 +235,19 @@ def main(comparison_config_path, years):
     )
     print(f"[INFO] Validation passed. {len(shared_basins)} shared test basins. Leads: {model_leads}")
 
+    hydro_year_start_month = model_configs[0].get('hydro_year_start_month', 10)
+    periods = dataset.build_year_periods(years, hydro_year_start_month)
+    print(f"[INFO] Evaluation period(s): {periods}")
+
+    # Evaluate under a separate experiment_name so this never overwrites the
+    # model's real (configured-test-split) visual_report_basin_*.csv, which
+    # analyze_results.py / data_availability_audit.py / a normal
+    # model_compare_test.py run all depend on. checkpoint_path is inherited
+    # unchanged, so the correct trained weights still load - only the
+    # *output* location changes.
+    eval_configs = [{**config, 'experiment_name': f"{config['experiment_name']}_custom_period"}
+                     for config in model_configs]
+
     output_dir = os.path.join(comparison_config.get('run_dir', './runs/model_comparisons/'),
                                comparison_config['comparison_name'])
     os.makedirs(output_dir, exist_ok=True)
@@ -167,15 +263,15 @@ def main(comparison_config_path, years):
             config={**comparison_config, 'years': years},
         )
 
-    # Load each checkpoint and run inference, writing/refreshing each
-    # model's own visual_report_basin_*.csv - same step model_compare_test.py
-    # always performs (no skip-if-exists caching, to avoid stale results).
-    print("\n[INFO] Evaluating model(s)...")
-    for label, config in zip(model_labels, model_configs):
+    # Load each checkpoint and run inference over exactly the requested
+    # period(s) - not the configured test split (see evaluate_model_over_years).
+    # Always recomputes (no skip-if-exists caching, to avoid stale results).
+    print("\n[INFO] Evaluating model(s) over the requested period(s)...")
+    for label, config in zip(model_labels, eval_configs):
         print(f"  Evaluating '{label}' ({config['experiment_name']})...")
-        run_single_model_eval(config, shared_basins)
+        evaluate_model_over_years(config, shared_basins, periods)
 
-    find_and_plot_events(model_configs, model_labels, model_leads, shared_basins, years, output_dir,
+    find_and_plot_events(eval_configs, model_labels, model_leads, shared_basins, years, periods, output_dir,
                           use_wandb=use_wandb)
 
     if use_wandb:
@@ -186,13 +282,14 @@ def main(comparison_config_path, years):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Load one or more trained models' checkpoints, scan real/predicted flood events, "
-                     "restrict to the given hydrological year(s), and plot observed-vs-predicted "
-                     "hydrographs (with rain overlay) for each.")
+        description="Load one or more trained models' checkpoints, run inference over the given "
+                     "hydrological year(s) - inside or outside the configured test split - scan "
+                     "real/predicted flood events, and plot observed-vs-predicted hydrographs "
+                     "(with rain overlay) for each.")
     parser.add_argument("--config", type=str, required=True,
                          help="Path to a comparison config YAML (same format as model_compare_test.py; "
                               "a single-entry model_configs list works too).")
     parser.add_argument("--years", type=int, nargs='+', required=True,
-                         help="One or more hydrological years (Oct->Sep) to restrict plotted events to.")
+                         help="One or more hydrological years (Oct->Sep) to evaluate and plot events for.")
     args = parser.parse_args()
     main(args.config, args.years)
