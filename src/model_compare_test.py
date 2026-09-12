@@ -18,6 +18,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
+from torch.utils.data import ConcatDataset
 
 try:
     import wandb
@@ -25,12 +26,14 @@ try:
 except ImportError:
     WANDB_AVAILABLE = False
 
+import dataset
 from dataset import IsraelBasinsDataset
 from quick_test import setup_evaluation_from_checkpoint
 from test import evaluate_basin_sequences, build_and_export_report
 import find_flood_events as ffe
 import plot_hydrographs as ph
 import peaks_analyze as pa
+from flow_quality_check import get_hydrological_year
 
 
 def load_config(yaml_path):
@@ -124,6 +127,71 @@ def run_single_model_eval(config, basins):
         if basin_data is None:
             print(f"  [WARNING] No continuous test windows found for basin {basin} "
                   f"({config['experiment_name']}). Skipping.")
+            continue
+        timestamps, actual_leads_dict, pred_leads_dict = basin_data
+        build_and_export_report(basin, output_dir, timestamps, actual_leads_dict, pred_leads_dict, config)
+
+    return exp_dir
+
+
+def _cluster_hydro_year(core_start, hydro_year_start_month):
+    return int(get_hydrological_year(pd.DatetimeIndex([core_start]), start_month=hydro_year_start_month)[0])
+
+
+class _PeriodBasinDataset:
+    """
+    Minimal IsraelBasinsDataset-compatible wrapper - sample_basin_mappings,
+    sample_date_mappings, __getitem__/__len__ - built directly from a list
+    of SingleBasinDataset objects over caller-supplied periods. Bypasses
+    IsraelBasinsDataset's hardcoded train/val/test split-type restriction
+    (dataset.py:_get_split_bounds_and_config only knows those three) without
+    touching dataset.py: builds the exact same tracking arrays
+    IsraelBasinsDataset.__init__ does, from the same basin_datasets shape,
+    just fed a custom periods list instead of one derived from a fixed split.
+    """
+    def __init__(self, basin_datasets):
+        self.basin_datasets = basin_datasets
+        self.concat_dataset = ConcatDataset(basin_datasets)
+        self.sample_basin_mappings = []
+        self.sample_date_mappings = []
+        for ds in basin_datasets:
+            for i in range(len(ds)):
+                self.sample_basin_mappings.append(ds.gauge_id)
+                actual_idx = ds.valid_indices[i]
+                target_idx = actual_idx + ds.seq_length - 1
+                self.sample_date_mappings.append(ds.dates[target_idx])
+
+    def __len__(self):
+        return len(self.concat_dataset)
+
+    def __getitem__(self, idx):
+        return self.concat_dataset[idx]
+
+
+def evaluate_model_over_years(config, basins, periods):
+    """
+    Loads config['checkpoint_path'] and runs inference over exactly the
+    given periods - not the configured test split. Mirrors
+    run_single_model_eval, swapping IsraelBasinsDataset(split_type='test', ...)
+    for a dataset built directly via dataset._build_basin_datasets over
+    custom periods, wrapped in _PeriodBasinDataset. split_type='test' passed
+    to _build_basin_datasets only selects eval_max_nan_pct tolerance inside
+    SingleBasinDataset - it doesn't tie this evaluation to the configured
+    test window. Always recomputes (no skip-if-exists caching), same
+    convention as run_single_model_eval. Returns exp_dir.
+    """
+    model, device, exp_dir = setup_evaluation_from_checkpoint(config)
+    output_dir = os.path.join(exp_dir, "visualization_reports")
+    os.makedirs(output_dir, exist_ok=True)
+
+    basin_datasets = dataset._build_basin_datasets(basins, config, periods, split_type='test')
+    period_dataset = _PeriodBasinDataset(basin_datasets)
+
+    for basin in basins:
+        basin_data = evaluate_basin_sequences(basin, period_dataset, model, device, config)
+        if basin_data is None:
+            print(f"  [WARNING] No windows found for basin {basin} ({config['experiment_name']}) "
+                  f"in the requested period(s). Skipping.")
             continue
         timestamps, actual_leads_dict, pred_leads_dict = basin_data
         build_and_export_report(basin, output_dir, timestamps, actual_leads_dict, pred_leads_dict, config)
@@ -429,21 +497,43 @@ def plot_hydrograph_comparison(window_df, model_labels, model_leads, model_color
 
 
 def run_event_and_peaks_analysis(model_configs, model_labels, model_leads, shared_basins,
-                                  output_dir, use_wandb=False):
+                                  output_dir, use_wandb=False, periods=None, years=None):
     """
     Per-basin target-time merge, N-way flood-event union/classification,
     hydrographs, and peak timing/magnitude analysis. Reuses each model's
     already-saved visual_report_basin_*.csv (via merge_basin_reports) - no
     model/inference needed, so this can be re-run standalone any time after
-    run_single_model_eval has produced those reports at least once (see
-    replot_nse_cdf_comparison.py). Writes flood_event_comparison.csv,
-    peaks_analysis_comparison.csv, and peaks_analysis_comparison_summary.csv
-    to output_dir, plus per-event hydrograph PNGs into
-    output_dir/comparison_plots/.
+    run_single_model_eval (or evaluate_model_over_years) has produced those
+    reports at least once (see replot_nse_cdf_comparison.py). Writes
+    flood_event_comparison.csv, peaks_analysis_comparison.csv, and
+    peaks_analysis_comparison_summary.csv to output_dir, plus per-event
+    hydrograph PNGs into output_dir/comparison_plots/.
+
+    periods/years: optional, for callers evaluating over arbitrary (possibly
+    non-contiguous) hydrological years rather than each model's fixed
+    configured test split (see model_compare_events_by_year.py).
+      - periods=None (default): unchanged behavior - each basin's whole
+        merged report history is scanned for events in one
+        _scan_series_for_events call, exactly as when the report already
+        covers precisely one contiguous evaluation window (the configured
+        test split).
+      - periods=[(start, end), ...]: events are scanned separately within
+        each period and the tagged results concatenated before clustering,
+        so _scan_series_for_events's consecutive-row grouping can never
+        merge an event tail from one requested period with an event head
+        from a different, temporally distant period.
+      - years: optional set/list of hydrological years: when given (only
+        meaningful together with periods), clusters are additionally kept
+        only if their core_start's hydrological year is in years - a cheap,
+        mostly-redundant defensive check mirroring periods' own bounds.
     """
     prediction_rp = model_configs[0]['prediction_threshold']
     buffer_days = model_configs[0].get('visual_buffer_days', 4)
     merge_gap_hours = model_configs[0].get('event_merge_gap_hours', 0)
+    hydro_year_start_month = model_configs[0].get('hydro_year_start_month', 10)
+    period_bounds = ([(pd.Timestamp(start), pd.Timestamp(end)) for start, end in periods]
+                      if periods is not None else None)
+    years = set(years) if years is not None else None
 
     model_color_map = build_model_color_map(model_labels)
     all_rows = []
@@ -461,29 +551,47 @@ def run_event_and_peaks_analysis(model_configs, model_labels, model_leads, share
         if threshold_value is None or threshold_value <= 0:
             continue
 
-        tagged = []
-        real_events = ffe._scan_series_for_events(merged_df, 'actual_flow', threshold_value,
-                                                    buffer_days, merge_gap_hours)
-        for ev in real_events:
-            tagged.append({**ev, 'source': 'real',
-                            'core_start': pd.to_datetime(ev['core_start']),
-                            'core_end': pd.to_datetime(ev['core_end'])})
-
-        for label in model_labels:
-            col = f'pred__{label}'
-            if col not in merged_df.columns:
-                continue
-            pred_events = ffe._scan_series_for_events(merged_df, col, threshold_value,
+        def _scan_and_tag(df):
+            tagged = []
+            real_events = ffe._scan_series_for_events(df, 'actual_flow', threshold_value,
                                                         buffer_days, merge_gap_hours)
-            for ev in pred_events:
-                tagged.append({**ev, 'source': label,
+            for ev in real_events:
+                tagged.append({**ev, 'source': 'real',
                                 'core_start': pd.to_datetime(ev['core_start']),
                                 'core_end': pd.to_datetime(ev['core_end'])})
+
+            for label in model_labels:
+                col = f'pred__{label}'
+                if col not in df.columns:
+                    continue
+                pred_events = ffe._scan_series_for_events(df, col, threshold_value,
+                                                            buffer_days, merge_gap_hours)
+                for ev in pred_events:
+                    tagged.append({**ev, 'source': label,
+                                    'core_start': pd.to_datetime(ev['core_start']),
+                                    'core_end': pd.to_datetime(ev['core_end'])})
+            return tagged
+
+        if period_bounds is None:
+            tagged = _scan_and_tag(merged_df)
+        else:
+            tagged = []
+            for period_start, period_end in period_bounds:
+                period_df = merged_df[(merged_df['timestamp'] >= period_start) &
+                                       (merged_df['timestamp'] <= period_end)]
+                if period_df.empty:
+                    continue
+                tagged.extend(_scan_and_tag(period_df))
 
         if not tagged:
             continue
 
         clusters = cluster_events(tagged)
+        if years is not None:
+            clusters = [c for c in clusters
+                        if _cluster_hydro_year(c['core_start'], hydro_year_start_month) in years]
+            if not clusters:
+                continue
         rows = classify_clusters(clusters, model_labels, basin)
         all_rows.extend(rows)
         comparison_pairs.extend(pa.collect_comparison_peak_pairs(merged_df, rows, basin, model_leads, flow_std_map))

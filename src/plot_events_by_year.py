@@ -19,7 +19,6 @@ import os
 
 import matplotlib.pyplot as plt
 import pandas as pd
-from torch.utils.data import ConcatDataset
 
 try:
     import wandb
@@ -28,81 +27,13 @@ except ImportError:
     WANDB_AVAILABLE = False
 
 import dataset
-from quick_test import setup_evaluation_from_checkpoint
-from test import evaluate_basin_sequences, build_and_export_report
 from model_compare_test import (
     load_config, validate_comparable,
     merge_basin_reports, cluster_events, classify_clusters,
     build_model_color_map, plot_hydrograph_comparison,
+    evaluate_model_over_years, _cluster_hydro_year,
 )
 import find_flood_events as ffe
-from flow_quality_check import get_hydrological_year
-
-
-def _cluster_hydro_year(core_start, hydro_year_start_month):
-    return int(get_hydrological_year(pd.DatetimeIndex([core_start]), start_month=hydro_year_start_month)[0])
-
-
-class _PeriodBasinDataset:
-    """
-    Minimal IsraelBasinsDataset-compatible wrapper - sample_basin_mappings,
-    sample_date_mappings, __getitem__/__len__ - built directly from a list
-    of SingleBasinDataset objects over caller-supplied periods. Bypasses
-    IsraelBasinsDataset's hardcoded train/val/test split-type restriction
-    (dataset.py:_get_split_bounds_and_config only knows those three) without
-    touching dataset.py: builds the exact same tracking arrays
-    IsraelBasinsDataset.__init__ does, from the same basin_datasets shape,
-    just fed a custom periods list instead of one derived from a fixed split.
-    """
-    def __init__(self, basin_datasets):
-        self.basin_datasets = basin_datasets
-        self.concat_dataset = ConcatDataset(basin_datasets)
-        self.sample_basin_mappings = []
-        self.sample_date_mappings = []
-        for ds in basin_datasets:
-            for i in range(len(ds)):
-                self.sample_basin_mappings.append(ds.gauge_id)
-                actual_idx = ds.valid_indices[i]
-                target_idx = actual_idx + ds.seq_length - 1
-                self.sample_date_mappings.append(ds.dates[target_idx])
-
-    def __len__(self):
-        return len(self.concat_dataset)
-
-    def __getitem__(self, idx):
-        return self.concat_dataset[idx]
-
-
-def evaluate_model_over_years(config, basins, periods):
-    """
-    Loads config['checkpoint_path'] and runs inference over exactly the
-    given periods - not the configured test split. Mirrors
-    model_compare_test.run_single_model_eval, swapping
-    IsraelBasinsDataset(split_type='test', ...) for a dataset built directly
-    via dataset._build_basin_datasets over custom periods, wrapped in
-    _PeriodBasinDataset. split_type='test' passed to _build_basin_datasets
-    only selects eval_max_nan_pct tolerance inside SingleBasinDataset - it
-    doesn't tie this evaluation to the configured test window. Always
-    recomputes (no skip-if-exists caching), same convention as
-    run_single_model_eval. Returns exp_dir.
-    """
-    model, device, exp_dir = setup_evaluation_from_checkpoint(config)
-    output_dir = os.path.join(exp_dir, "visualization_reports")
-    os.makedirs(output_dir, exist_ok=True)
-
-    basin_datasets = dataset._build_basin_datasets(basins, config, periods, split_type='test')
-    period_dataset = _PeriodBasinDataset(basin_datasets)
-
-    for basin in basins:
-        basin_data = evaluate_basin_sequences(basin, period_dataset, model, device, config)
-        if basin_data is None:
-            print(f"  [WARNING] No windows found for basin {basin} ({config['experiment_name']}) "
-                  f"in the requested period(s). Skipping.")
-            continue
-        timestamps, actual_leads_dict, pred_leads_dict = basin_data
-        build_and_export_report(basin, output_dir, timestamps, actual_leads_dict, pred_leads_dict, config)
-
-    return exp_dir
 
 
 def find_and_plot_events(model_configs, model_labels, model_leads, shared_basins, years, periods, output_dir,
