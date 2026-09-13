@@ -67,64 +67,77 @@ def match_events(real_events, predicted_events):
 
 
 def main(config=None, basin_ids=None):
+    """
+    Runs the real-vs-predicted event match SEPARATELY for every configured
+    prediction_threshold spec (return_period and/or specific_discharge),
+    writing one flood_event_comparison_{label}.csv per threshold. Returns
+    {label: output_path}.
+    """
     if config is None:
         config = ffe.load_config("configs/config.yml")
 
-    prediction_threshold = config.get('prediction_threshold', 2)
+    prediction_specs = ffe.normalize_threshold_specs(config.get('prediction_threshold', 2))
     longest_lead = max(config.get('forecast_lead_times', [0, 1, 2, 3]))
 
     run_dir = config.get('run_dir', './runs/')
     exp_dir = os.path.join(run_dir, config['experiment_name'])
-    output_path = os.path.join(exp_dir, "flood_event_comparison.csv")
 
     real_path = config['find_flood_events_output']
     predicted_path = os.path.join(exp_dir, "predicted_flood_events.csv")
 
-    real_df = pd.read_csv(real_path, dtype={'basin_id': str}) if os.path.exists(real_path) else pd.DataFrame()
-    predicted_df = pd.read_csv(predicted_path, dtype={'basin_id': str}) if os.path.exists(predicted_path) else pd.DataFrame()
+    all_real_df = pd.read_csv(real_path, dtype={'basin_id': str}) if os.path.exists(real_path) else pd.DataFrame()
+    all_predicted_df = pd.read_csv(predicted_path, dtype={'basin_id': str}) if os.path.exists(predicted_path) else pd.DataFrame()
 
-    if not real_df.empty:
-        real_df = real_df[real_df['return_period_years'] == prediction_threshold]
-    if not predicted_df.empty:
-        predicted_df = predicted_df[(predicted_df['return_period_years'] == prediction_threshold) &
-                                     (predicted_df['lead_time_h'] == longest_lead)]
+    output_paths = {}
+    for spec in prediction_specs:
+        label = ffe.threshold_label(spec)
 
-    if basin_ids is None:
-        basins = sorted(set(real_df.get('basin_id', [])) | set(predicted_df.get('basin_id', [])))
-    else:
-        basins = list(basin_ids)
+        real_df = all_real_df[all_real_df['threshold_label'] == label] if not all_real_df.empty else all_real_df
+        predicted_df = (all_predicted_df[(all_predicted_df['threshold_label'] == label) &
+                                          (all_predicted_df['lead_time_h'] == longest_lead)]
+                        if not all_predicted_df.empty else all_predicted_df)
 
-    rows = []
-    for basin in basins:
-        real_events = [
-            {'core_start': pd.to_datetime(r['core_start']), 'core_end': pd.to_datetime(r['core_end']), 'peak_flow': r['peak_flow']}
-            for _, r in real_df[real_df.get('basin_id', pd.Series(dtype=str)) == basin].iterrows()
-        ] if not real_df.empty else []
-        predicted_events = [
-            {'core_start': pd.to_datetime(r['core_start']), 'core_end': pd.to_datetime(r['core_end']), 'peak_flow': r['peak_flow']}
-            for _, r in predicted_df[predicted_df.get('basin_id', pd.Series(dtype=str)) == basin].iterrows()
-        ] if not predicted_df.empty else []
+        if basin_ids is None:
+            basins = sorted(set(real_df.get('basin_id', [])) | set(predicted_df.get('basin_id', [])))
+        else:
+            basins = list(basin_ids)
 
-        if not real_events and not predicted_events:
-            continue
+        rows = []
+        for basin in basins:
+            real_events = [
+                {'core_start': pd.to_datetime(r['core_start']), 'core_end': pd.to_datetime(r['core_end']), 'peak_flow': r['peak_flow']}
+                for _, r in real_df[real_df.get('basin_id', pd.Series(dtype=str)) == basin].iterrows()
+            ] if not real_df.empty else []
+            predicted_events = [
+                {'core_start': pd.to_datetime(r['core_start']), 'core_end': pd.to_datetime(r['core_end']), 'peak_flow': r['peak_flow']}
+                for _, r in predicted_df[predicted_df.get('basin_id', pd.Series(dtype=str)) == basin].iterrows()
+            ] if not predicted_df.empty else []
 
-        for idx, ev in enumerate(match_events(real_events, predicted_events), start=1):
-            rows.append({
-                'basin_id': basin,
-                'event_idx': idx,
-                'label': ev['label'],
-                'return_period_years': prediction_threshold,
-                'lead_time_h': longest_lead,
-                'core_start': ev['core_start'].strftime('%Y-%m-%d %H:%M:%S'),
-                'core_end': ev['core_end'].strftime('%Y-%m-%d %H:%M:%S'),
-                'real_peak_flow': ev['real_peak_flow'],
-                'predicted_peak_flow': ev['predicted_peak_flow'],
-            })
+            if not real_events and not predicted_events:
+                continue
 
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    pd.DataFrame(rows).to_csv(output_path, index=False)
-    print(f"[INFO] Wrote {len(rows)} compared flood events (TP/FP/FN) to {output_path}")
-    return output_path
+            for idx, ev in enumerate(match_events(real_events, predicted_events), start=1):
+                rows.append({
+                    'basin_id': basin,
+                    'event_idx': idx,
+                    'label': ev['label'],
+                    'threshold_label': label,
+                    'lead_time_h': longest_lead,
+                    'core_start': ev['core_start'].strftime('%Y-%m-%d %H:%M:%S'),
+                    'core_end': ev['core_end'].strftime('%Y-%m-%d %H:%M:%S'),
+                    'real_peak_flow': ev['real_peak_flow'],
+                    'predicted_peak_flow': ev['predicted_peak_flow'],
+                })
+
+        columns = ['basin_id', 'event_idx', 'label', 'threshold_label', 'lead_time_h',
+                   'core_start', 'core_end', 'real_peak_flow', 'predicted_peak_flow']
+        output_path = os.path.join(exp_dir, f"flood_event_comparison_{label}.csv")
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        pd.DataFrame(rows, columns=columns).to_csv(output_path, index=False)
+        print(f"[INFO] Wrote {len(rows)} compared flood events (TP/FP/FN) for threshold {label} to {output_path}")
+        output_paths[label] = output_path
+
+    return output_paths
 
 
 if __name__ == "__main__":

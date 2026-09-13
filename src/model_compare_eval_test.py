@@ -20,6 +20,8 @@ try:
 except ImportError:
     WANDB_AVAILABLE = False
 
+import find_flood_events as ffe
+
 SCOPES = ('TP', 'TP_FN')
 
 
@@ -89,14 +91,16 @@ def reshape_peaks_summary(peaks_summary_df):
     return pd.DataFrame(rows)
 
 
-def build_eval_summary(output_dir):
+def build_eval_summary(output_dir, label):
     """
-    Reads flood_event_comparison.csv and peaks_analysis_comparison_summary.csv
-    from output_dir (both written by model_compare_test.py), and combines
-    them into one per-model row. Returns None if either file is missing.
+    Reads flood_event_comparison_{label}.csv and
+    peaks_analysis_comparison_summary_{label}.csv from output_dir (both
+    written by model_compare_test.py/model_compare_events_by_year.py for that
+    one prediction-threshold spec), and combines them into one per-model row.
+    Returns None if either file is missing.
     """
-    events_path = os.path.join(output_dir, "flood_event_comparison.csv")
-    peaks_summary_path = os.path.join(output_dir, "peaks_analysis_comparison_summary.csv")
+    events_path = os.path.join(output_dir, f"flood_event_comparison_{label}.csv")
+    peaks_summary_path = os.path.join(output_dir, f"peaks_analysis_comparison_summary_{label}.csv")
 
     if not os.path.exists(events_path) or not os.path.exists(peaks_summary_path):
         print(f"[Warning] Missing '{events_path}' and/or '{peaks_summary_path}'. "
@@ -113,19 +117,16 @@ def build_eval_summary(output_dir):
 
 
 def main(comparison_config_path="configs/compare_model_0_leads.yml"):
+    """
+    Runs build_eval_summary SEPARATELY for every prediction_threshold spec
+    configured on the comparison's first model config, writing one
+    model_comparison_eval_{label}.csv per threshold. Returns {label: DataFrame}.
+    """
     comparison_config = load_config(comparison_config_path)
     output_dir = _get_comparison_output_dir(comparison_config)
 
-    combined_df = build_eval_summary(output_dir)
-    if combined_df is None:
-        return None
-
-    csv_path = os.path.join(output_dir, "model_comparison_eval.csv")
-    combined_df.to_csv(csv_path, index=False)
-
-    print("\nModel comparison evaluation summary:")
-    print(combined_df.to_string(index=False))
-    print(f"\n[INFO] Saved to: {csv_path}\n")
+    first_model_config = load_config(comparison_config['model_configs'][0])
+    prediction_specs = ffe.normalize_threshold_specs(first_model_config['prediction_threshold'])
 
     use_wandb = comparison_config.get('use_wandb', False) and WANDB_AVAILABLE
     if use_wandb:
@@ -137,18 +138,37 @@ def main(comparison_config_path="configs/compare_model_0_leads.yml"):
             name=f"{comparison_config['comparison_name']}_eval",
             config=comparison_config,
         )
-        for _, row in combined_df.iterrows():
-            label = row['model_label']
-            wandb.log({
-                f"compare_eval/{label}/precision": row['precision'],
-                f"compare_eval/{label}/recall": row['recall'],
-                f"compare_eval/{label}/f1": row['f1'],
-                f"compare_eval/{label}/time_distance_h_TP_mean": row['time_distance_h_TP_mean'],
-                f"compare_eval/{label}/magnitude_diff_norm_TP_mean": row['magnitude_diff_norm_TP_mean'],
-            })
+
+    combined_dfs = {}
+    for spec in prediction_specs:
+        label = ffe.threshold_label(spec)
+        combined_df = build_eval_summary(output_dir, label)
+        if combined_df is None:
+            continue
+        combined_dfs[label] = combined_df
+
+        csv_path = os.path.join(output_dir, f"model_comparison_eval_{label}.csv")
+        combined_df.to_csv(csv_path, index=False)
+
+        print(f"\nModel comparison evaluation summary [{label}]:")
+        print(combined_df.to_string(index=False))
+        print(f"\n[INFO] Saved to: {csv_path}\n")
+
+        if use_wandb:
+            for _, row in combined_df.iterrows():
+                model_label = row['model_label']
+                wandb.log({
+                    f"compare_eval/{label}/{model_label}/precision": row['precision'],
+                    f"compare_eval/{label}/{model_label}/recall": row['recall'],
+                    f"compare_eval/{label}/{model_label}/f1": row['f1'],
+                    f"compare_eval/{label}/{model_label}/time_distance_h_TP_mean": row['time_distance_h_TP_mean'],
+                    f"compare_eval/{label}/{model_label}/magnitude_diff_norm_TP_mean": row['magnitude_diff_norm_TP_mean'],
+                })
+
+    if use_wandb:
         wandb.finish()
 
-    return combined_df
+    return combined_dfs
 
 
 if __name__ == "__main__":

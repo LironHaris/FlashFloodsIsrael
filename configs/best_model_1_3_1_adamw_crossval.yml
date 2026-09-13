@@ -482,11 +482,32 @@ visual_buffer_days: 1
 event_merge_gap_hours: 6
 find_flood_events_output: ./data/processed/flood_events/flood_events_all_basins.csv
 
-# Return period (years) used to select which flood events get compared/plotted as
-# TP/FP/FN (see compare_flood_events.py). The underlying event scans still cover every
-# configured return_periods_years/forecast_lead_times for analysis; this only controls
-# which single RP's events become the comparison plots.
-prediction_threshold: 2
+# Threshold(s) used to classify flood events (TP/FP/FN) and run peak timing/
+# magnitude analysis (see compare_flood_events.py, peaks_analyze.py,
+# model_compare_test.py). Each entry is either a bare number (legacy form,
+# auto-normalized to a return_period year - existing single-RP configs keep
+# working unmodified) or an explicit {type, value} spec: type is
+# 'return_period' (RP-year threshold from the GEV-fit combined return-period
+# file) or 'specific_discharge' (flow threshold = value * basin area, km2).
+# Event classification/peaks analysis run SEPARATELY per threshold, each
+# producing its own output file(s); hydrograph plotting is deduped across
+# thresholds (see find_flood_events.normalize_threshold_specs).
+prediction_threshold:
+  - type: return_period
+    value: 2
+  - type: specific_discharge
+    value: 0.1
+
+# Which threshold bars get drawn as horizontal lines on hydrographs -
+# independent of prediction_threshold (drives classification) and of
+# return_periods_years (just controls which RP columns/hit-rate stats get
+# computed for reporting). Same {type, value} spec format as above; falls
+# back to return_periods_years if unset.
+shown_threshold_bars:
+  - type: return_period
+    value: 2
+  - type: specific_discharge
+    value: 0.1
 
 # --- Multi-Horizon Forecast Settings (In Hours ahead) ---
 forecast_lead_times: [1]

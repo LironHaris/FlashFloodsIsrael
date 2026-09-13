@@ -120,13 +120,16 @@ DETAIL_COLUMNS = ['basin_id', 'lead', 'label', 'core_start', 'core_end',
                   'time_distance_h', 'magnitude_diff_norm']
 
 
-def collect_peak_pairs(config, basin_ids=None, exp_dir=None, flow_std_map=None):
+def collect_peak_pairs(config, spec, basin_ids=None, exp_dir=None, flow_std_map=None, area_map=None):
     """
-    Single-model peak-pair collection: for every basin x every configured
-    lead time, matches real vs. (target-time-shifted) predicted flood events
-    and returns one row per matched TP/FN event (FP dropped - no real peak to
-    compare against). Returns an empty, correctly-columned DataFrame if
-    nothing matched anywhere.
+    Single-model peak-pair collection for ONE prediction-threshold spec: for
+    every basin x every configured lead time, matches real vs.
+    (target-time-shifted) predicted flood events and returns one row per
+    matched TP/FN event (FP dropped - no real peak to compare against).
+    Returns an empty, correctly-columned DataFrame if nothing matched
+    anywhere. Callers wanting multiple thresholds call this once per spec
+    (see build_peaks_report) - kept single-threshold here so it stays a
+    simple, reusable primitive.
     """
     if exp_dir is None:
         exp_dir = os.path.join(config.get('run_dir', './runs/'), config['experiment_name'])
@@ -138,7 +141,7 @@ def collect_peak_pairs(config, basin_ids=None, exp_dir=None, flow_std_map=None):
 
     buffer_days = config.get('visual_buffer_days', 4)
     merge_gap_hours = config.get('event_merge_gap_hours', 0)
-    prediction_rp = config.get('prediction_threshold', 2)
+    label = ffe.threshold_label(spec)
 
     rows = []
     for basin_id in basin_ids:
@@ -146,9 +149,9 @@ def collect_peak_pairs(config, basin_ids=None, exp_dir=None, flow_std_map=None):
         if df is None:
             continue
 
-        threshold_value = ffe.load_basin_threshold(basin_id, prediction_rp, config)
+        threshold_value = ffe.resolve_threshold_value(basin_id, spec, config, area_map)
         if threshold_value is None or threshold_value <= 0:
-            print(f"  [Warning] Basin {basin_id}: no usable {prediction_rp}yr threshold. Skipping.")
+            print(f"  [Warning] Basin {basin_id}: no usable {label} threshold. Skipping.")
             continue
 
         real_events = _scan_events(df, 'actual_flow', threshold_value, buffer_days, merge_gap_hours)
@@ -207,13 +210,15 @@ def compute_peak_magnitude(detail_df, scope):
 SCOPES = ('TP', 'TP_FN')
 
 
-def build_peaks_report(config, basin_ids=None, exp_dir=None):
+def build_peaks_report(config, spec, basin_ids=None, exp_dir=None, area_map=None):
     """
-    Assembles the full single-model peaks report: detail rows (label-tagged)
-    followed by both scopes' summary rows (scope-tagged: lead_mean,
-    model_mean, model_variance). Does not write to disk.
+    Assembles the full single-model peaks report for ONE prediction-threshold
+    spec: detail rows (label-tagged) followed by both scopes' summary rows
+    (scope-tagged: lead_mean, model_mean, model_variance). Does not write to
+    disk. See build_peaks_reports_by_threshold for the multi-threshold entry
+    point that loops this once per configured spec.
     """
-    detail_df = collect_peak_pairs(config, basin_ids=basin_ids, exp_dir=exp_dir)
+    detail_df = collect_peak_pairs(config, spec, basin_ids=basin_ids, exp_dir=exp_dir, area_map=area_map)
 
     summary_frames = []
     for scope in SCOPES:
@@ -227,28 +232,41 @@ def build_peaks_report(config, basin_ids=None, exp_dir=None):
 
 
 def main(config=None, basin_ids=None):
+    """
+    Runs build_peaks_report SEPARATELY for every configured prediction_threshold
+    spec, writing one peaks_analysis_{label}.csv per threshold. Returns
+    {label: csv_path}.
+    """
     if config is None:
         config = ffe.load_config("configs/config.yml")
 
     exp_dir = os.path.join(config.get('run_dir', './runs/'), config['experiment_name'])
-    combined_df = build_peaks_report(config, basin_ids=basin_ids, exp_dir=exp_dir)
+    prediction_specs = ffe.normalize_threshold_specs(config.get('prediction_threshold', 2))
+    area_map = ffe.load_basin_area_map(config) if any(s['type'] == 'specific_discharge' for s in prediction_specs) else None
 
-    csv_path = os.path.join(exp_dir, "peaks_analysis.csv")
-    os.makedirs(exp_dir, exist_ok=True)
-    combined_df.to_csv(csv_path, index=False)
+    csv_paths = {}
+    for spec in prediction_specs:
+        label = ffe.threshold_label(spec)
+        combined_df = build_peaks_report(config, spec, basin_ids=basin_ids, exp_dir=exp_dir, area_map=area_map)
 
-    for scope in SCOPES:
-        model_mean = combined_df[(combined_df['basin_id'] == 'model_mean') & (combined_df['scope'] == scope)]
-        model_var = combined_df[(combined_df['basin_id'] == 'model_variance') & (combined_df['scope'] == scope)]
-        if not model_mean.empty:
-            print(f"[INFO] Scope {scope} — mean time_distance_h: {model_mean['time_distance_h'].iloc[0]:.3f}, "
-                  f"mean magnitude_diff_norm: {model_mean['magnitude_diff_norm'].iloc[0]:.3f}")
-        if not model_var.empty:
-            print(f"[INFO] Scope {scope} — variance time_distance_h: {model_var['time_distance_h'].iloc[0]:.3f}, "
-                  f"variance magnitude_diff_norm: {model_var['magnitude_diff_norm'].iloc[0]:.3f}")
+        csv_path = os.path.join(exp_dir, f"peaks_analysis_{label}.csv")
+        os.makedirs(exp_dir, exist_ok=True)
+        combined_df.to_csv(csv_path, index=False)
 
-    print(f"[INFO] Wrote peaks analysis to {csv_path}")
-    return csv_path
+        for scope in SCOPES:
+            model_mean = combined_df[(combined_df['basin_id'] == 'model_mean') & (combined_df['scope'] == scope)]
+            model_var = combined_df[(combined_df['basin_id'] == 'model_variance') & (combined_df['scope'] == scope)]
+            if not model_mean.empty:
+                print(f"[INFO] [{label}] Scope {scope} — mean time_distance_h: {model_mean['time_distance_h'].iloc[0]:.3f}, "
+                      f"mean magnitude_diff_norm: {model_mean['magnitude_diff_norm'].iloc[0]:.3f}")
+            if not model_var.empty:
+                print(f"[INFO] [{label}] Scope {scope} — variance time_distance_h: {model_var['time_distance_h'].iloc[0]:.3f}, "
+                      f"variance magnitude_diff_norm: {model_var['magnitude_diff_norm'].iloc[0]:.3f}")
+
+        print(f"[INFO] Wrote peaks analysis for threshold {label} to {csv_path}")
+        csv_paths[label] = csv_path
+
+    return csv_paths
 
 
 def collect_comparison_peak_pairs(merged_df, classified_rows, basin_id, model_leads, flow_std_map):

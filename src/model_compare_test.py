@@ -31,6 +31,7 @@ from dataset import IsraelBasinsDataset
 from quick_test import setup_evaluation_from_checkpoint
 from test import evaluate_basin_sequences, build_and_export_report
 import find_flood_events as ffe
+from find_flood_events import cluster_events  # re-exported for existing callers (plot_events_by_year.py)
 import plot_hydrographs as ph
 import peaks_analyze as pa
 from flow_quality_check import get_hydrological_year
@@ -255,7 +256,7 @@ def merge_basin_reports(basin, model_configs, model_labels, model_leads):
 
         actual_col = f"actual_lead_{lead}h"
         pred_col = f"pred_lead_{lead}h"
-        thresh_cols = [c for c in df.columns if c.startswith('threshold_') and c.endswith('yr_rp')]
+        thresh_cols = [c for c in df.columns if c.startswith('threshold_')]
 
         rename_map = {actual_col: f'actual_at_target__{label}', pred_col: f'pred__{label}'}
         rename_map.update({c: f'{c}__{label}' for c in thresh_cols})
@@ -278,16 +279,18 @@ def merge_basin_reports(basin, model_configs, model_labels, model_leads):
         merged['actual_flow'] = merged['actual_flow'].combine_first(merged[c])
     merged = merged.drop(columns=actual_cols)
 
-    # Coalesce return-period thresholds back to bare `threshold_{rp}yr_rp`
-    # column names (static per basin; validated identical across models).
-    rp_years = sorted({c.split('threshold_')[1].split('yr_rp')[0]
-                        for c in merged.columns if c.startswith('threshold_') and 'yr_rp' in c})
-    for rp in rp_years:
-        rp_cols = [c for c in merged.columns if c.startswith(f'threshold_{rp}yr_rp')]
-        merged[f'threshold_{rp}yr_rp'] = merged[rp_cols[0]]
-        for c in rp_cols[1:]:
-            merged[f'threshold_{rp}yr_rp'] = merged[f'threshold_{rp}yr_rp'].combine_first(merged[c])
-        merged = merged.drop(columns=[c for c in rp_cols if c != f'threshold_{rp}yr_rp'])
+    # Coalesce every threshold column (any type/label - see
+    # find_flood_events.threshold_column_name) back to its bare name (static
+    # per basin; validated identical across models). Each was tagged
+    # f'{base_col}__{label}' above; group by base_col to merge back.
+    threshold_cols = [c for c in merged.columns if c.startswith('threshold_')]
+    base_names = sorted({c.rsplit('__', 1)[0] for c in threshold_cols})
+    for base in base_names:
+        matching = [c for c in threshold_cols if c == base or c.startswith(f'{base}__')]
+        merged[base] = merged[matching[0]]
+        for c in matching[1:]:
+            merged[base] = merged[base].combine_first(merged[c])
+        merged = merged.drop(columns=[c for c in matching if c != base])
 
     merged = merged.sort_values('target_time').reset_index(drop=True)
     merged = merged.rename(columns={'target_time': 'timestamp'})
@@ -301,29 +304,6 @@ def merge_basin_reports(basin, model_configs, model_labels, model_leads):
         merged = merged.merge(rain_df, on='timestamp', how='left')
 
     return merged
-
-
-def cluster_events(tagged_events):
-    """
-    Merges overlapping (unpadded core_start/core_end) events from ANY source
-    (real flow or any model's predictions) into unified clusters via the
-    standard merge-overlapping-intervals sweep (sort by start, extend while
-    the next event's start <= the cluster's current end). Each cluster keeps
-    its member tagged events for classify_clusters to inspect.
-    """
-    if not tagged_events:
-        return []
-    events_sorted = sorted(tagged_events, key=lambda e: e['core_start'])
-    clusters = [{'core_start': events_sorted[0]['core_start'],
-                 'core_end': events_sorted[0]['core_end'],
-                 'members': [events_sorted[0]]}]
-    for ev in events_sorted[1:]:
-        if ev['core_start'] <= clusters[-1]['core_end']:
-            clusters[-1]['core_end'] = max(clusters[-1]['core_end'], ev['core_end'])
-            clusters[-1]['members'].append(ev)
-        else:
-            clusters.append({'core_start': ev['core_start'], 'core_end': ev['core_end'], 'members': [ev]})
-    return clusters
 
 
 def classify_clusters(clusters, model_labels, basin_id):
@@ -423,7 +403,7 @@ def plot_nse_cdf_comparison(model_nse, model_leads, comparison_config, output_di
 
 def plot_hydrograph_comparison(window_df, model_labels, model_leads, model_color_map, title,
                                 output_dir, filename, event_labels=None, hourly_xticks=False,
-                                xlim=None):
+                                xlim=None, shown_threshold_specs=None):
     """
     Fixed-size hydrograph: real flow (black) + one line per model's
     pred__{label} column (in its fixed color). window_df's 'timestamp'
@@ -439,6 +419,10 @@ def plot_hydrograph_comparison(window_df, model_labels, model_leads, model_color
     to tick across that bogus range instead of rendering a normal hydrograph.
     Pass the caller's own known padded-window bounds to avoid this regardless
     of how many rows fall inside.
+    shown_threshold_specs: optional list of threshold specs (see
+    find_flood_events.normalize_threshold_specs) naming exactly which
+    threshold bars to draw - replaces the old behavior of blanket-drawing
+    every threshold_*yr_rp column found in window_df. None draws nothing.
     """
     fig, ax = plt.subplots(figsize=(12, 6.5), dpi=150, facecolor="#fafafa")
     ax.set_facecolor("#ffffff")
@@ -458,14 +442,18 @@ def plot_hydrograph_comparison(window_df, model_labels, model_leads, model_color
                     color=model_color_map[label], linewidth=1.4, alpha=0.9,
                     label=f'{label} (+{lead}h){tag}')
 
-    for c in window_df.columns:
-        if c.startswith('threshold_') and c.endswith('yr_rp'):
-            rp = c.split('threshold_')[1].split('yr_rp')[0]
-            thresh_series = window_df[c].dropna()
-            if not thresh_series.empty and thresh_series.iloc[0] > 0:
-                ax.axhline(y=float(thresh_series.iloc[0]), color=ph.THRESHOLD_COLORS.get(int(rp), '#d9d9d9'),
-                           linestyle='-.', linewidth=2.0, alpha=1.0,
-                           label=f'{rp}yr RP ({thresh_series.iloc[0]:.1f} m³/s)')
+    for spec in (shown_threshold_specs or []):
+        label = ffe.threshold_label(spec)
+        col = ffe.threshold_column_name(spec)
+        if col not in window_df.columns:
+            continue
+        thresh_series = window_df[col].dropna()
+        if thresh_series.empty or thresh_series.iloc[0] <= 0:
+            continue
+        color = ph.THRESHOLD_COLORS.get(label, ph.THRESHOLD_COLORS.get(spec['type'], '#d9d9d9'))
+        ax.axhline(y=float(thresh_series.iloc[0]), color=color,
+                   linestyle='-.', linewidth=2.0, alpha=1.0,
+                   label=f'{label} ({thresh_series.iloc[0]:.1f} m³/s)')
 
     ax.set_title(title, fontsize=12, fontweight='bold', pad=15, color='#2c3e50')
     ax.set_xlabel('Time (target)', fontsize=10.5, labelpad=8)
@@ -526,109 +514,164 @@ def run_event_and_peaks_analysis(model_configs, model_labels, model_leads, share
         meaningful together with periods), clusters are additionally kept
         only if their core_start's hydrological year is in years - a cheap,
         mostly-redundant defensive check mirroring periods' own bounds.
+
+    prediction_threshold (model_configs[0]) may hold multiple threshold specs
+    (return_period and/or specific_discharge - see
+    find_flood_events.normalize_threshold_specs). Event classification and
+    peaks analysis run SEPARATELY per threshold, each writing its own
+    flood_event_comparison_{label}.csv / peaks_analysis_comparison_{label}.csv
+    / peaks_analysis_comparison_summary_{label}.csv. Hydrograph PNGs are
+    DEDUPED across thresholds: a basin+time-window flagged by more than one
+    threshold is plotted exactly once (see find_flood_events.merge_events_across_thresholds),
+    labeled by whichever contributing threshold has the lower resolved flow
+    value for that basin. shown_threshold_bars (falling back to
+    return_periods_years) controls which threshold lines are drawn on those
+    plots, independent of prediction_threshold.
     """
-    prediction_rp = model_configs[0]['prediction_threshold']
+    prediction_specs = ffe.normalize_threshold_specs(model_configs[0]['prediction_threshold'])
+    shown_threshold_specs = ffe.normalize_threshold_specs(
+        model_configs[0].get('shown_threshold_bars', model_configs[0].get('return_periods_years', []))
+    )
     buffer_days = model_configs[0].get('visual_buffer_days', 4)
     merge_gap_hours = model_configs[0].get('event_merge_gap_hours', 0)
     hydro_year_start_month = model_configs[0].get('hydro_year_start_month', 10)
     period_bounds = ([(pd.Timestamp(start), pd.Timestamp(end)) for start, end in periods]
                       if periods is not None else None)
     years = set(years) if years is not None else None
+    area_map = (ffe.load_basin_area_map(model_configs[0])
+                if any(s['type'] == 'specific_discharge' for s in prediction_specs) else None)
 
     model_color_map = build_model_color_map(model_labels)
-    all_rows = []
     flow_std_map = pa.load_flow_std_map(model_configs[0])
-    comparison_pairs = []
 
-    print(f"\n[INFO] Scanning {len(shared_basins)} basins for flood events across all models...")
+    prediction_labels = [ffe.threshold_label(s) for s in prediction_specs]
+    all_rows_by_label = {label: [] for label in prediction_labels}
+    comparison_pairs_by_label = {label: [] for label in prediction_labels}
+
+    # For the plotting-dedup pass: per basin, each threshold's own clusters
+    # (with that cluster's per-model classification rows attached) plus that
+    # basin's resolved flow value per threshold.
+    plot_events_by_basin = {}    # {basin: {label: [{'core_start','core_end','rows'}]}}
+    value_by_label_by_basin = {} # {basin: {label: resolved_flow_value}}
+    merged_df_by_basin = {}
+
+    print(f"\n[INFO] Scanning {len(shared_basins)} basins for flood events across all models "
+          f"and thresholds {prediction_labels}...")
     for basin in shared_basins:
         merged_df = merge_basin_reports(basin, model_configs, model_labels, model_leads)
         if merged_df is None:
             print(f"  [WARNING] No model has data for basin {basin}. Skipping.")
             continue
+        merged_df_by_basin[basin] = merged_df
 
-        threshold_value = ffe.load_basin_threshold(basin, prediction_rp, model_configs[0])
-        if threshold_value is None or threshold_value <= 0:
-            continue
+        events_by_label = {}
+        value_by_label = {}
 
-        def _scan_and_tag(df):
-            tagged = []
-            real_events = ffe._scan_series_for_events(df, 'actual_flow', threshold_value,
-                                                        buffer_days, merge_gap_hours)
-            for ev in real_events:
-                tagged.append({**ev, 'source': 'real',
-                                'core_start': pd.to_datetime(ev['core_start']),
-                                'core_end': pd.to_datetime(ev['core_end'])})
+        for spec, label in zip(prediction_specs, prediction_labels):
+            threshold_value = ffe.resolve_threshold_value(basin, spec, model_configs[0], area_map)
+            if threshold_value is None or threshold_value <= 0:
+                continue
+            value_by_label[label] = threshold_value
 
-            for label in model_labels:
-                col = f'pred__{label}'
-                if col not in df.columns:
-                    continue
-                pred_events = ffe._scan_series_for_events(df, col, threshold_value,
+            def _scan_and_tag(df, threshold_value=threshold_value):
+                tagged = []
+                real_events = ffe._scan_series_for_events(df, 'actual_flow', threshold_value,
                                                             buffer_days, merge_gap_hours)
-                for ev in pred_events:
-                    tagged.append({**ev, 'source': label,
+                for ev in real_events:
+                    tagged.append({**ev, 'source': 'real',
                                     'core_start': pd.to_datetime(ev['core_start']),
                                     'core_end': pd.to_datetime(ev['core_end'])})
-            return tagged
 
-        if period_bounds is None:
-            tagged = _scan_and_tag(merged_df)
-        else:
-            tagged = []
-            for period_start, period_end in period_bounds:
-                period_df = merged_df[(merged_df['timestamp'] >= period_start) &
-                                       (merged_df['timestamp'] <= period_end)]
-                if period_df.empty:
-                    continue
-                tagged.extend(_scan_and_tag(period_df))
+                for model_label in model_labels:
+                    col = f'pred__{model_label}'
+                    if col not in df.columns:
+                        continue
+                    pred_events = ffe._scan_series_for_events(df, col, threshold_value,
+                                                                buffer_days, merge_gap_hours)
+                    for ev in pred_events:
+                        tagged.append({**ev, 'source': model_label,
+                                        'core_start': pd.to_datetime(ev['core_start']),
+                                        'core_end': pd.to_datetime(ev['core_end'])})
+                return tagged
 
-        if not tagged:
-            continue
+            if period_bounds is None:
+                tagged = _scan_and_tag(merged_df)
+            else:
+                tagged = []
+                for period_start, period_end in period_bounds:
+                    period_df = merged_df[(merged_df['timestamp'] >= period_start) &
+                                           (merged_df['timestamp'] <= period_end)]
+                    if period_df.empty:
+                        continue
+                    tagged.extend(_scan_and_tag(period_df))
 
-        clusters = cluster_events(tagged)
-        if years is not None:
-            clusters = [c for c in clusters
-                        if _cluster_hydro_year(c['core_start'], hydro_year_start_month) in years]
-            if not clusters:
+            if not tagged:
                 continue
-        rows = classify_clusters(clusters, model_labels, basin)
-        all_rows.extend(rows)
-        comparison_pairs.extend(pa.collect_comparison_peak_pairs(merged_df, rows, basin, model_leads, flow_std_map))
 
-        for idx, cluster in enumerate(clusters, start=1):
-            padded_start = max(cluster['core_start'] - pd.Timedelta(days=buffer_days), merged_df['timestamp'].min())
-            padded_end = min(cluster['core_end'] + pd.Timedelta(days=buffer_days), merged_df['timestamp'].max())
+            clusters = cluster_events(tagged)
+            if years is not None:
+                clusters = [c for c in clusters
+                            if _cluster_hydro_year(c['core_start'], hydro_year_start_month) in years]
+                if not clusters:
+                    continue
+
+            rows = classify_clusters(clusters, model_labels, basin)
+            all_rows_by_label[label].extend(rows)
+            comparison_pairs_by_label[label].extend(
+                pa.collect_comparison_peak_pairs(merged_df, rows, basin, model_leads, flow_std_map))
+
+            events_by_label[label] = [
+                {'core_start': cluster['core_start'], 'core_end': cluster['core_end'],
+                 'rows': [r for r in rows if r['event_idx'] == idx]}
+                for idx, cluster in enumerate(clusters, start=1)
+            ]
+
+        if events_by_label:
+            plot_events_by_basin[basin] = events_by_label
+            value_by_label_by_basin[basin] = value_by_label
+
+    # Plotting pass: one PNG per basin per merged (cross-threshold-deduped) window.
+    for basin, events_by_label in plot_events_by_basin.items():
+        merged_df = merged_df_by_basin[basin]
+        merged_windows = ffe.merge_events_across_thresholds(events_by_label, value_by_label_by_basin[basin])
+
+        for idx, window in enumerate(merged_windows, start=1):
+            padded_start = max(window['core_start'] - pd.Timedelta(days=buffer_days), merged_df['timestamp'].min())
+            padded_end = min(window['core_end'] + pd.Timedelta(days=buffer_days), merged_df['timestamp'].max())
             window_df = merged_df[(merged_df['timestamp'] >= padded_start) & (merged_df['timestamp'] <= padded_end)]
             if window_df.empty:
                 continue
 
-            event_labels = {row['model_label']: row['label'] for row in rows if row['event_idx'] == idx}
-            title = (f"Basin {basin} — Model Comparison Storm Event\n"
-                     f"Core: {cluster['core_start'].strftime('%Y-%m-%d %H:%M')} → "
-                     f"{cluster['core_end'].strftime('%Y-%m-%d %H:%M')}")
+            event_labels = {row['model_label']: row['label'] for row in window['rows']}
+            title = (f"Basin {basin} — Model Comparison Storm Event [{window['winning_label']}]\n"
+                     f"Core: {window['core_start'].strftime('%Y-%m-%d %H:%M')} → "
+                     f"{window['core_end'].strftime('%Y-%m-%d %H:%M')}")
             filename = f"hydrograph_{basin}_event{idx}.png"
             fig = plot_hydrograph_comparison(window_df, model_labels, model_leads, model_color_map,
                                               title, output_dir, filename, event_labels=event_labels,
-                                              hourly_xticks=True, xlim=(padded_start, padded_end))
+                                              hourly_xticks=True, xlim=(padded_start, padded_end),
+                                              shown_threshold_specs=shown_threshold_specs)
             if use_wandb:
                 wandb.log({f"compare/flood_events/{basin}/event{idx}": wandb.Image(fig)})
             plt.close(fig)
 
-    csv_path = os.path.join(output_dir, "flood_event_comparison.csv")
-    pd.DataFrame(all_rows).to_csv(csv_path, index=False)
-    print(f"\n[INFO] Wrote {len(all_rows)} comparison event rows to {csv_path}")
+    event_columns = ['basin_id', 'event_idx', 'core_start', 'core_end',
+                      'real_peak_flow', 'model_label', 'model_peak_flow', 'label']
+    for label in prediction_labels:
+        csv_path = os.path.join(output_dir, f"flood_event_comparison_{label}.csv")
+        pd.DataFrame(all_rows_by_label[label], columns=event_columns).to_csv(csv_path, index=False)
+        print(f"\n[INFO] [{label}] Wrote {len(all_rows_by_label[label])} comparison event rows to {csv_path}")
 
-    peaks_detail_df = pd.DataFrame(comparison_pairs)
-    peaks_detail_df, peaks_summary_df = pa.build_comparison_peaks_report(peaks_detail_df, model_labels)
+        peaks_detail_df = pd.DataFrame(comparison_pairs_by_label[label], columns=pa.DETAIL_COLUMNS + ['model_label'])
+        peaks_detail_df, peaks_summary_df = pa.build_comparison_peaks_report(peaks_detail_df, model_labels)
 
-    peaks_csv_path = os.path.join(output_dir, "peaks_analysis_comparison.csv")
-    peaks_detail_df.to_csv(peaks_csv_path, index=False)
-    print(f"[INFO] Wrote peaks analysis comparison ({len(peaks_detail_df)} matched events) to {peaks_csv_path}")
+        peaks_csv_path = os.path.join(output_dir, f"peaks_analysis_comparison_{label}.csv")
+        peaks_detail_df.to_csv(peaks_csv_path, index=False)
+        print(f"[INFO] [{label}] Wrote peaks analysis comparison ({len(peaks_detail_df)} matched events) to {peaks_csv_path}")
 
-    peaks_summary_csv_path = os.path.join(output_dir, "peaks_analysis_comparison_summary.csv")
-    peaks_summary_df.to_csv(peaks_summary_csv_path, index=False)
-    print(f"[INFO] Wrote peaks analysis comparison summary to {peaks_summary_csv_path}")
+        peaks_summary_csv_path = os.path.join(output_dir, f"peaks_analysis_comparison_summary_{label}.csv")
+        peaks_summary_df.to_csv(peaks_summary_csv_path, index=False)
+        print(f"[INFO] [{label}] Wrote peaks analysis comparison summary to {peaks_summary_csv_path}")
 
 
 def main(comparison_config_path="configs/compare_model_0_leads.yml"):

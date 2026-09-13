@@ -21,6 +21,8 @@ try:
 except ImportError:
     WANDB_AVAILABLE = False
 
+import find_flood_events as ffe
+
 
 def load_config(yaml_path):
     """Load the YAML configuration file safely."""
@@ -210,12 +212,12 @@ def _confusion_counts(actual_np, pred_np, threshold):
     return tp, fp, fn
 
 
-def compute_basin_classification_metrics(basin_id, exp_dir, lead, prediction_rp):
+def compute_basin_classification_metrics(basin_id, exp_dir, lead, spec):
     """
-    Precision/Recall for one basin at one lead time, using the canonical
-    prediction_threshold return period's threshold already baked into the
-    report by test.py:build_and_export_report. Returns None if the report
-    or required columns are missing.
+    Precision/Recall for one basin at one lead time, using one
+    prediction_threshold spec's threshold already baked into the report by
+    test.py:build_and_export_report. Returns None if the report or required
+    columns are missing.
     """
     report_path = os.path.join(exp_dir, "visualization_reports", f"visual_report_basin_{basin_id}.csv")
     if not os.path.exists(report_path):
@@ -224,7 +226,7 @@ def compute_basin_classification_metrics(basin_id, exp_dir, lead, prediction_rp)
     df = pd.read_csv(report_path)
     actual_col = f"actual_lead_{lead}h"
     pred_col = f"pred_lead_{lead}h"
-    thresh_col = f"threshold_{prediction_rp}yr_rp"
+    thresh_col = ffe.threshold_column_name(spec)
     if actual_col not in df.columns or pred_col not in df.columns or thresh_col not in df.columns:
         return None
 
@@ -243,10 +245,12 @@ def compute_classification_metrics_by_lead(config, basin_ids=None):
     per lead, then the mean across leads (one model-level number per metric).
     Also computes model_variance: the pooled variance of precision and of
     recall across every individual basin x lead value (not the variance of
-    the small per-lead-means series). Saves a single CSV to
-    {exp_dir}/analysis_plots/classification_metrics.csv with per-basin rows,
-    one 'lead_mean' row per lead, and final 'model_mean'/'model_variance'
-    rows. Returns (per_basin_df, per_lead_means_df, model_means, model_variance).
+    the small per-lead-means series). Runs SEPARATELY for every configured
+    prediction_threshold spec, saving one
+    {exp_dir}/analysis_plots/classification_metrics_{label}.csv per threshold
+    (per-basin rows, one 'lead_mean' row per lead, and final
+    'model_mean'/'model_variance' rows). Returns {label: (per_basin_df,
+    per_lead_means_df, model_means, model_variance)}.
     """
     exp_dir = _get_exp_dir(config)
 
@@ -257,53 +261,57 @@ def compute_classification_metrics_by_lead(config, basin_ids=None):
               f"Run test.py or quick_test.py first.")
         return None
 
-    prediction_rp = config['prediction_threshold']
+    prediction_specs = ffe.normalize_threshold_specs(config['prediction_threshold'])
 
-    per_basin_rows = []
-    per_lead_mean_rows = []
-    for lead in config['forecast_lead_times']:
-        lead_rows = []
-        for basin_id in sorted(basin_ids):
-            metrics = compute_basin_classification_metrics(basin_id, exp_dir, lead, prediction_rp)
-            if metrics is None:
-                print(f"  [Warning] Skipping basin {basin_id} at lead {lead}h: report or columns missing.")
+    results_by_label = {}
+    for spec in prediction_specs:
+        label = ffe.threshold_label(spec)
+        per_basin_rows = []
+        per_lead_mean_rows = []
+        for lead in config['forecast_lead_times']:
+            lead_rows = []
+            for basin_id in sorted(basin_ids):
+                metrics = compute_basin_classification_metrics(basin_id, exp_dir, lead, spec)
+                if metrics is None:
+                    print(f"  [Warning] [{label}] Skipping basin {basin_id} at lead {lead}h: report or columns missing.")
+                    continue
+                row = {'basin_id': basin_id, 'lead': lead, **metrics}
+                per_basin_rows.append(row)
+                lead_rows.append(metrics)
+
+            if not lead_rows:
+                print(f"[Warning] [{label}] Lead {lead}h: no basins produced usable classification metrics.")
                 continue
-            row = {'basin_id': basin_id, 'lead': lead, **metrics}
-            per_basin_rows.append(row)
-            lead_rows.append(metrics)
 
-        if not lead_rows:
-            print(f"[Warning] Lead {lead}h: no basins produced usable classification metrics.")
-            continue
+            lead_df = pd.DataFrame(lead_rows)
+            lead_mean = {'basin_id': 'lead_mean', 'lead': lead,
+                         'precision': lead_df['precision'].mean(), 'recall': lead_df['recall'].mean()}
+            per_lead_mean_rows.append(lead_mean)
 
-        lead_df = pd.DataFrame(lead_rows)
-        lead_mean = {'basin_id': 'lead_mean', 'lead': lead,
-                     'precision': lead_df['precision'].mean(), 'recall': lead_df['recall'].mean()}
-        per_lead_mean_rows.append(lead_mean)
+        per_basin_df = pd.DataFrame(per_basin_rows)
+        per_lead_means_df = pd.DataFrame(per_lead_mean_rows)
+        model_means = per_lead_means_df[['precision', 'recall']].mean()
+        model_variance = per_basin_df[['precision', 'recall']].var()
 
-    per_basin_df = pd.DataFrame(per_basin_rows)
-    per_lead_means_df = pd.DataFrame(per_lead_mean_rows)
-    model_means = per_lead_means_df[['precision', 'recall']].mean()
-    model_variance = per_basin_df[['precision', 'recall']].var()
+        model_mean_row = pd.DataFrame([{'basin_id': 'model_mean', 'lead': None,
+                                         'precision': model_means['precision'], 'recall': model_means['recall']}])
+        model_variance_row = pd.DataFrame([{'basin_id': 'model_variance', 'lead': None,
+                                             'precision': model_variance['precision'], 'recall': model_variance['recall']}])
+        combined_df = pd.concat([per_basin_df, per_lead_means_df, model_mean_row, model_variance_row], ignore_index=True)
 
-    model_mean_row = pd.DataFrame([{'basin_id': 'model_mean', 'lead': None,
-                                     'precision': model_means['precision'], 'recall': model_means['recall']}])
-    model_variance_row = pd.DataFrame([{'basin_id': 'model_variance', 'lead': None,
-                                         'precision': model_variance['precision'], 'recall': model_variance['recall']}])
-    combined_df = pd.concat([per_basin_df, per_lead_means_df, model_mean_row, model_variance_row], ignore_index=True)
+        plots_dir = os.path.join(exp_dir, "analysis_plots")
+        os.makedirs(plots_dir, exist_ok=True)
+        csv_path = os.path.join(plots_dir, f"classification_metrics_{label}.csv")
+        combined_df.to_csv(csv_path, index=False)
+        results_by_label[label] = (per_basin_df, per_lead_means_df, model_means, model_variance)
 
-    plots_dir = os.path.join(exp_dir, "analysis_plots")
-    os.makedirs(plots_dir, exist_ok=True)
-    csv_path = os.path.join(plots_dir, "classification_metrics.csv")
-    combined_df.to_csv(csv_path, index=False)
+        print(f"\n[{label}] Classification metrics — per-lead means:")
+        print(per_lead_means_df.to_string(index=False))
+        print(f"\n[{label}] Model mean — precision: {model_means['precision']:.4f}, recall: {model_means['recall']:.4f}")
+        print(f"[{label}] Model variance — precision: {model_variance['precision']:.4f}, recall: {model_variance['recall']:.4f}")
+        print(f"Saved to: {csv_path}\n")
 
-    print("\nClassification metrics — per-lead means:")
-    print(per_lead_means_df.to_string(index=False))
-    print(f"\nModel mean — precision: {model_means['precision']:.4f}, recall: {model_means['recall']:.4f}")
-    print(f"Model variance — precision: {model_variance['precision']:.4f}, recall: {model_variance['recall']:.4f}")
-    print(f"Saved to: {csv_path}\n")
-
-    return per_basin_df, per_lead_means_df, model_means, model_variance
+    return results_by_label
 
 
 def main(config=None, basin_ids=None):
@@ -330,19 +338,19 @@ def main(config=None, basin_ids=None):
                     wandb.log({key: wandb.Image(fig)})
                     plt.close(fig)
 
-    result = compute_classification_metrics_by_lead(config, basin_ids=basin_ids)
-    if use_wandb and result is not None:
-        _, per_lead_means_df, model_means, model_variance = result
-        for _, row in per_lead_means_df.iterrows():
-            lead = int(row['lead'])
-            wandb.log({
-                f"analyze_results/classification/precision_lead_{lead}h": row['precision'],
-                f"analyze_results/classification/recall_lead_{lead}h": row['recall'],
-            })
-        wandb.run.summary['classification_mean_precision'] = model_means['precision']
-        wandb.run.summary['classification_mean_recall'] = model_means['recall']
-        wandb.run.summary['classification_variance_precision'] = model_variance['precision']
-        wandb.run.summary['classification_variance_recall'] = model_variance['recall']
+    results_by_label = compute_classification_metrics_by_lead(config, basin_ids=basin_ids)
+    if use_wandb and results_by_label is not None:
+        for label, (_, per_lead_means_df, model_means, model_variance) in results_by_label.items():
+            for _, row in per_lead_means_df.iterrows():
+                lead = int(row['lead'])
+                wandb.log({
+                    f"analyze_results/classification/{label}/precision_lead_{lead}h": row['precision'],
+                    f"analyze_results/classification/{label}/recall_lead_{lead}h": row['recall'],
+                })
+            wandb.run.summary[f'classification_mean_precision_{label}'] = model_means['precision']
+            wandb.run.summary[f'classification_mean_recall_{label}'] = model_means['recall']
+            wandb.run.summary[f'classification_variance_precision_{label}'] = model_variance['precision']
+            wandb.run.summary[f'classification_variance_recall_{label}'] = model_variance['recall']
 
     if use_wandb:
         wandb.finish()

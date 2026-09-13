@@ -135,28 +135,49 @@ def main(config_path="configs/config.yml"):
             nse_accumulator[lead].append(nse_val)
 
     if use_wandb:
-        # Scan real + predicted flood events, then compare them at prediction_threshold
-        # RP to classify each as TP/FP/FN - one graph per event, no duplicates.
+        # Scan real + predicted flood events, then compare them at every
+        # configured prediction_threshold to classify each as TP/FP/FN - each
+        # threshold gets its own comparison/peaks files, but a window flagged
+        # by more than one threshold gets exactly one plotted hydrograph (see
+        # ffe.merge_events_across_thresholds).
         print("\n[INFO] Scanning for flood events across all basins...")
         ffe.main(config=config, basin_ids=test_basins)
         print("\n[INFO] Scanning for predicted flood events across all basins...")
         pfe.main(config=config, basin_ids=test_basins)
         print("\n[INFO] Comparing real vs. predicted flood events...")
-        comparison_path = cfe.main(config=config, basin_ids=test_basins)
+        comparison_paths = cfe.main(config=config, basin_ids=test_basins)  # {label: path}
 
         print("\n[INFO] Computing peak timing/magnitude analysis...")
         pa.main(config=config, basin_ids=test_basins)
 
-        if os.path.exists(comparison_path):
-            comparison_df = pd.read_csv(comparison_path, dtype={'basin_id': str})
-            for _, event in comparison_df.iterrows():
-                basin = str(event['basin_id'])
-                label = event['label']
-                idx = int(event['event_idx'])
-                fig = ph.plot_basin_storm_event(basin, event['core_start'], event['core_end'],
+        prediction_specs = ffe.normalize_threshold_specs(config.get('prediction_threshold', 2))
+        area_map = (ffe.load_basin_area_map(config)
+                    if any(s['type'] == 'specific_discharge' for s in prediction_specs) else None)
+
+        events_by_basin = {}  # {basin_id: {threshold_label: [event dicts]}}
+        for spec in prediction_specs:
+            label = ffe.threshold_label(spec)
+            path = comparison_paths.get(label)
+            if not path or not os.path.exists(path):
+                continue
+            df_cmp = pd.read_csv(path, dtype={'basin_id': str})
+            for basin_id, group in df_cmp.groupby('basin_id'):
+                events_by_basin.setdefault(basin_id, {})[label] = [
+                    {'core_start': pd.to_datetime(r['core_start']), 'core_end': pd.to_datetime(r['core_end']),
+                     'label': r['label'], 'event_idx': int(r['event_idx'])}
+                    for _, r in group.iterrows()
+                ]
+
+        for basin_id, events_by_label in events_by_basin.items():
+            value_by_label = {ffe.threshold_label(spec): ffe.resolve_threshold_value(basin_id, spec, config, area_map)
+                               for spec in prediction_specs}
+            for window in ffe.merge_events_across_thresholds(events_by_label, value_by_label):
+                label = window['label']
+                idx = window['event_idx']
+                fig = ph.plot_basin_storm_event(basin_id, window['core_start'], window['core_end'],
                                                  config, label=label, event_idx=idx)
                 if fig is not None:
-                    key = f"quicktest/flood_events/{basin}/event{idx}_{label}"
+                    key = f"quicktest/flood_events/{basin_id}/event{idx}_{label}"
                     wandb.log({key: wandb.Image(fig)})
                     plt.close(fig)
 

@@ -31,6 +31,7 @@ except ImportError:
     WANDB_AVAILABLE = False
 
 import dataset
+import find_flood_events as ffe
 from model_compare_test import (
     load_config, validate_comparable, evaluate_model_over_years,
     compute_model_nse, plot_nse_cdf_comparison, run_event_and_peaks_analysis,
@@ -111,24 +112,29 @@ def main(comparison_config_path, years):
 
     # Step 4: combine into the final per-model confusion-matrix/precision/
     # recall/F1 + peaks summary (same as running model_compare_eval_test.py
-    # separately, done here so one invocation produces everything).
-    combined_df = build_eval_summary(output_dir)
-    if combined_df is not None:
-        csv_path = os.path.join(output_dir, "model_comparison_eval.csv")
+    # separately, done here so one invocation produces everything) -
+    # SEPARATELY per prediction_threshold spec, one model_comparison_eval_{label}.csv each.
+    prediction_specs = ffe.normalize_threshold_specs(model_configs[0]['prediction_threshold'])
+    for spec in prediction_specs:
+        label = ffe.threshold_label(spec)
+        combined_df = build_eval_summary(output_dir, label)
+        if combined_df is None:
+            continue
+        csv_path = os.path.join(output_dir, f"model_comparison_eval_{label}.csv")
         combined_df.to_csv(csv_path, index=False)
-        print("\nModel comparison evaluation summary:")
+        print(f"\nModel comparison evaluation summary [{label}]:")
         print(combined_df.to_string(index=False))
         print(f"[INFO] Saved to: {csv_path}")
 
         if use_wandb:
             for _, row in combined_df.iterrows():
-                label = row['model_label']
+                model_label = row['model_label']
                 wandb.log({
-                    f"compare_eval/{label}/precision": row['precision'],
-                    f"compare_eval/{label}/recall": row['recall'],
-                    f"compare_eval/{label}/f1": row['f1'],
-                    f"compare_eval/{label}/time_distance_h_TP_mean": row.get('time_distance_h_TP_mean'),
-                    f"compare_eval/{label}/magnitude_diff_norm_TP_mean": row.get('magnitude_diff_norm_TP_mean'),
+                    f"compare_eval/{label}/{model_label}/precision": row['precision'],
+                    f"compare_eval/{label}/{model_label}/recall": row['recall'],
+                    f"compare_eval/{label}/{model_label}/f1": row['f1'],
+                    f"compare_eval/{label}/{model_label}/time_distance_h_TP_mean": row.get('time_distance_h_TP_mean'),
+                    f"compare_eval/{label}/{model_label}/magnitude_diff_norm_TP_mean": row.get('magnitude_diff_norm_TP_mean'),
                 })
 
     if use_wandb:

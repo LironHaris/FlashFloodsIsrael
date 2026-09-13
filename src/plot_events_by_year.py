@@ -52,88 +52,118 @@ def find_and_plot_events(model_configs, model_labels, model_leads, shared_basins
     periods can never produce overlapping unpadded windows), keeps only
     clusters whose core_start falls in one of the requested hydrological
     years (a cheap, now mostly-redundant defensive check), classifies the
-    survivors TP/FN/FP/TN per model (classify_clusters), and plots one
-    hydrograph per surviving cluster. Writes a companion CSV of exactly the
-    plotted events. Returns the number of hydrographs plotted.
+    survivors TP/FN/FP/TN per model (classify_clusters). Event classification
+    runs SEPARATELY per configured prediction_threshold spec (return_period
+    and/or specific_discharge), each writing its own
+    flood_event_comparison_years_{years_tag}_{label}.csv. Hydrograph PNGs are
+    DEDUPED across thresholds - a window flagged by more than one threshold
+    is plotted exactly once (see find_flood_events.merge_events_across_thresholds),
+    labeled by whichever contributing threshold has the lower resolved flow
+    value for that basin. shown_threshold_bars (falling back to
+    return_periods_years) controls which threshold lines are drawn.
+    Returns the number of hydrographs plotted.
     """
-    prediction_rp = model_configs[0]['prediction_threshold']
+    prediction_specs = ffe.normalize_threshold_specs(model_configs[0]['prediction_threshold'])
+    shown_threshold_specs = ffe.normalize_threshold_specs(
+        model_configs[0].get('shown_threshold_bars', model_configs[0].get('return_periods_years', []))
+    )
     buffer_days = model_configs[0].get('visual_buffer_days', 4)
     merge_gap_hours = model_configs[0].get('event_merge_gap_hours', 0)
     hydro_year_start_month = model_configs[0].get('hydro_year_start_month', 10)
     years = set(years)
     period_bounds = [(pd.Timestamp(start), pd.Timestamp(end)) for start, end in periods]
+    area_map = (ffe.load_basin_area_map(model_configs[0])
+                if any(s['type'] == 'specific_discharge' for s in prediction_specs) else None)
 
     model_color_map = build_model_color_map(model_labels)
-    all_rows = []
+    prediction_labels = [ffe.threshold_label(s) for s in prediction_specs]
+    all_rows_by_label = {label: [] for label in prediction_labels}
     n_plotted = 0
 
-    print(f"\n[INFO] Scanning {len(shared_basins)} basins for flood events in hydro-year(s) {sorted(years)}...")
+    print(f"\n[INFO] Scanning {len(shared_basins)} basins for flood events in hydro-year(s) "
+          f"{sorted(years)} across thresholds {prediction_labels}...")
     for basin in shared_basins:
         merged_df = merge_basin_reports(basin, model_configs, model_labels, model_leads)
         if merged_df is None:
             continue
 
-        threshold_value = ffe.load_basin_threshold(basin, prediction_rp, model_configs[0])
-        if threshold_value is None or threshold_value <= 0:
-            continue
+        events_by_label = {}
+        value_by_label = {}
 
-        tagged = []
-        for period_start, period_end in period_bounds:
-            period_df = merged_df[(merged_df['timestamp'] >= period_start) & (merged_df['timestamp'] <= period_end)]
-            if period_df.empty:
+        for spec, label in zip(prediction_specs, prediction_labels):
+            threshold_value = ffe.resolve_threshold_value(basin, spec, model_configs[0], area_map)
+            if threshold_value is None or threshold_value <= 0:
                 continue
+            value_by_label[label] = threshold_value
 
-            real_events = ffe._scan_series_for_events(period_df, 'actual_flow', threshold_value,
-                                                        buffer_days, merge_gap_hours)
-            for ev in real_events:
-                tagged.append({**ev, 'source': 'real',
-                                'core_start': pd.to_datetime(ev['core_start']),
-                                'core_end': pd.to_datetime(ev['core_end'])})
-
-            for label in model_labels:
-                col = f'pred__{label}'
-                if col not in period_df.columns:
+            tagged = []
+            for period_start, period_end in period_bounds:
+                period_df = merged_df[(merged_df['timestamp'] >= period_start) & (merged_df['timestamp'] <= period_end)]
+                if period_df.empty:
                     continue
-                pred_events = ffe._scan_series_for_events(period_df, col, threshold_value,
+
+                real_events = ffe._scan_series_for_events(period_df, 'actual_flow', threshold_value,
                                                             buffer_days, merge_gap_hours)
-                for ev in pred_events:
-                    tagged.append({**ev, 'source': label,
+                for ev in real_events:
+                    tagged.append({**ev, 'source': 'real',
                                     'core_start': pd.to_datetime(ev['core_start']),
                                     'core_end': pd.to_datetime(ev['core_end'])})
 
-        if not tagged:
+                for model_label in model_labels:
+                    col = f'pred__{model_label}'
+                    if col not in period_df.columns:
+                        continue
+                    pred_events = ffe._scan_series_for_events(period_df, col, threshold_value,
+                                                                buffer_days, merge_gap_hours)
+                    for ev in pred_events:
+                        tagged.append({**ev, 'source': model_label,
+                                        'core_start': pd.to_datetime(ev['core_start']),
+                                        'core_end': pd.to_datetime(ev['core_end'])})
+
+            if not tagged:
+                continue
+
+            clusters = cluster_events(tagged)
+            clusters = [c for c in clusters
+                        if _cluster_hydro_year(c['core_start'], hydro_year_start_month) in years]
+            if not clusters:
+                continue
+
+            rows = classify_clusters(clusters, model_labels, basin)
+            all_rows_by_label[label].extend(rows)
+
+            events_by_label[label] = [
+                {'core_start': cluster['core_start'], 'core_end': cluster['core_end'],
+                 'rows': [r for r in rows if r['event_idx'] == idx]}
+                for idx, cluster in enumerate(clusters, start=1)
+            ]
+
+        if not events_by_label:
             continue
 
-        clusters = cluster_events(tagged)
-        clusters = [c for c in clusters
-                    if _cluster_hydro_year(c['core_start'], hydro_year_start_month) in years]
-        if not clusters:
-            continue
-
-        rows = classify_clusters(clusters, model_labels, basin)
-        all_rows.extend(rows)
-
-        for idx, cluster in enumerate(clusters, start=1):
-            padded_start = max(cluster['core_start'] - pd.Timedelta(days=buffer_days), merged_df['timestamp'].min())
-            padded_end = min(cluster['core_end'] + pd.Timedelta(days=buffer_days), merged_df['timestamp'].max())
+        merged_windows = ffe.merge_events_across_thresholds(events_by_label, value_by_label)
+        for window in merged_windows:
+            padded_start = max(window['core_start'] - pd.Timedelta(days=buffer_days), merged_df['timestamp'].min())
+            padded_end = min(window['core_end'] + pd.Timedelta(days=buffer_days), merged_df['timestamp'].max())
             window_df = merged_df[(merged_df['timestamp'] >= padded_start) & (merged_df['timestamp'] <= padded_end)]
             if window_df.empty:
                 continue
 
-            event_labels = {row['model_label']: row['label'] for row in rows if row['event_idx'] == idx}
-            title = (f"Basin {basin} — Storm Event\n"
-                     f"Core: {cluster['core_start'].strftime('%Y-%m-%d %H:%M')} → "
-                     f"{cluster['core_end'].strftime('%Y-%m-%d %H:%M')}")
+            event_labels = {row['model_label']: row['label'] for row in window['rows']}
+            title = (f"Basin {basin} — Storm Event [{window['winning_label']}]\n"
+                     f"Core: {window['core_start'].strftime('%Y-%m-%d %H:%M')} → "
+                     f"{window['core_end'].strftime('%Y-%m-%d %H:%M')}")
             # Filename keyed by the event's own date, not a positional index -
             # this run's filtered cluster list numbers differently than a
             # full model_compare_test.py run over the same basins/models
             # would, so a positional "event{idx}" name would be ambiguous if
             # the two ever write into the same output folder.
-            date_tag = cluster['core_start'].strftime('%Y-%m-%d')
+            date_tag = window['core_start'].strftime('%Y-%m-%d')
             filename = f"hydrograph_{basin}_{date_tag}.png"
             fig = plot_hydrograph_comparison(window_df, model_labels, model_leads, model_color_map,
                                               title, output_dir, filename, event_labels=event_labels,
-                                              hourly_xticks=True, xlim=(padded_start, padded_end))
+                                              hourly_xticks=True, xlim=(padded_start, padded_end),
+                                              shown_threshold_specs=shown_threshold_specs)
             if use_wandb:
                 wandb.log({f"events_by_year/{basin}/{date_tag}": wandb.Image(fig)})
             plt.close(fig)
@@ -141,11 +171,14 @@ def find_and_plot_events(model_configs, model_labels, model_leads, shared_basins
             print(f"  {basin} {date_tag}: saved {filename}")
 
     years_tag = "_".join(str(y) for y in sorted(years))
-    csv_path = os.path.join(output_dir, f"flood_event_comparison_years_{years_tag}.csv")
     columns = ['basin_id', 'event_idx', 'core_start', 'core_end',
                'real_peak_flow', 'model_label', 'model_peak_flow', 'label']
-    pd.DataFrame(all_rows, columns=columns).to_csv(csv_path, index=False)
-    print(f"\n[INFO] Plotted {n_plotted} hydrographs. Wrote {len(all_rows)} rows to {csv_path}")
+    for label in prediction_labels:
+        csv_path = os.path.join(output_dir, f"flood_event_comparison_years_{years_tag}_{label}.csv")
+        pd.DataFrame(all_rows_by_label[label], columns=columns).to_csv(csv_path, index=False)
+        print(f"[INFO] [{label}] Wrote {len(all_rows_by_label[label])} rows to {csv_path}")
+
+    print(f"\n[INFO] Plotted {n_plotted} hydrographs.")
 
     return n_plotted
 

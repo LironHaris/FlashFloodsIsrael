@@ -13,10 +13,18 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 
+import find_flood_events as ffe
+
 
 LEAD_COLORS = {0: '#2b8cbe', 1: '#8856a7', 2: '#cb181d', 3: '#86592d', 6: '#cb181d', 12: '#86592d', 24: '#f16913'}
 LEAD_STYLES = {0: '-',       1: '--',      2: '--',      3: ':',       6: '--',      12: ':',      24: ':'}
-THRESHOLD_COLORS = {2: '#238b45', 5: '#238b45', 10: '#ef3b2c', 20: '#990000', 30: '#67000d'}
+# Keyed by threshold label (find_flood_events.threshold_label, e.g. '2yr',
+# 'sq0.1') for an exact match, falling back to the threshold TYPE
+# ('return_period'/'specific_discharge') for any label without its own entry.
+THRESHOLD_COLORS = {
+    '2yr': '#238b45', '5yr': '#238b45', '10yr': '#ef3b2c', '20yr': '#990000', '30yr': '#67000d',
+    'return_period': '#238b45', 'specific_discharge': '#08519c',
+}
 
 
 def load_config(yaml_path):
@@ -101,11 +109,13 @@ def add_rain_overlay(ax, timestamps, rain_values):
     return ax2
 
 
-def _build_hydrograph_figure(plot_df, title, config, rp_filter=None, hourly_xticks=False, xlim=None):
+def _build_hydrograph_figure(plot_df, title, config, hourly_xticks=False, xlim=None):
     """
     Shared Matplotlib figure builder for hydrograph functions.
     Fixed-size canvas (12 x 6.5 in @ 150 dpi).
-    rp_filter: if set (int), only draw that return period's threshold line.
+    Threshold bars drawn are exactly config['shown_threshold_bars'] (falling
+    back to return_periods_years if unset, matching pre-existing behavior for
+    configs that don't set the new key) - see find_flood_events.normalize_threshold_specs.
     hourly_xticks: if True, format the time axis with hourly ticks (storm windows).
     xlim: optional (start, end) timestamps to fix the x-axis to explicitly.
     Without this, matplotlib autoscales the x-axis from the plotted data - which
@@ -123,7 +133,9 @@ def _build_hydrograph_figure(plot_df, title, config, rp_filter=None, hourly_xtic
     predicts rather than the moment the forecast was made.
     """
     active_leads = config.get('forecast_lead_times', [0, 1, 2, 3])
-    rp_years = [rp_filter] if rp_filter is not None else config.get('return_periods_years', [2, 5, 10])
+    shown_specs = ffe.normalize_threshold_specs(
+        config.get('shown_threshold_bars', config.get('return_periods_years', [2, 5, 10]))
+    )
 
     fig, ax = plt.subplots(figsize=(12, 6.5), dpi=150, facecolor="#fafafa")
     ax.set_facecolor("#ffffff")
@@ -144,14 +156,16 @@ def _build_hydrograph_figure(plot_df, title, config, rp_filter=None, hourly_xtic
                     linewidth=1.4, alpha=0.85, label=f'+{lead}h Lead')
 
     # Threshold lines
-    for rp in rp_years:
-        thresh_col = f"threshold_{rp}yr_rp"
+    for spec in shown_specs:
+        label = ffe.threshold_label(spec)
+        thresh_col = ffe.threshold_column_name(spec)
         if thresh_col in plot_df.columns:
             thresh_val = float(plot_df[thresh_col].iloc[0])
             if thresh_val > 0:
-                ax.axhline(y=thresh_val, color=THRESHOLD_COLORS.get(rp, '#d9d9d9'),
+                color = THRESHOLD_COLORS.get(label, THRESHOLD_COLORS.get(spec['type'], '#d9d9d9'))
+                ax.axhline(y=thresh_val, color=color,
                            linestyle='-.', linewidth=2.2, alpha=1.0,
-                           label=f'{rp}yr RP ({thresh_val:.1f} m³/s)')
+                           label=f'{label} ({thresh_val:.1f} m³/s)')
 
     ax.set_title(title, fontsize=12, fontweight='bold', pad=15, color='#2c3e50')
     ax.set_xlabel('Time', fontsize=10.5, labelpad=8)
