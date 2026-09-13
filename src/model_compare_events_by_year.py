@@ -35,6 +35,7 @@ import find_flood_events as ffe
 from model_compare_test import (
     load_config, validate_comparable, evaluate_model_over_years,
     compute_model_nse, plot_nse_cdf_comparison, run_event_and_peaks_analysis,
+    plot_yearly_overview_hydrographs,
 )
 from model_compare_eval_test import build_eval_summary
 
@@ -96,7 +97,14 @@ def main(comparison_config_path, years):
         print(f"  Evaluating '{label}' ({config['experiment_name']})...")
         evaluate_model_over_years(config, shared_basins, periods)
 
-    # Step 2: comparison NSE CDF - one curve per model, same figure.
+    # Step 2: whole-year overview hydrographs (observed-vs-predicted +
+    # observed-minus-predicted difference), one pair per basin per individual
+    # requested year - always per-year, even when adjacent requested years
+    # merge into one evaluation period above.
+    plot_yearly_overview_hydrographs(eval_configs, model_labels, model_leads, shared_basins,
+                                      years, output_dir, use_wandb)
+
+    # Step 3: comparison NSE CDF - one curve per model, same figure.
     model_nse = compute_model_nse(eval_configs, model_labels, model_leads, shared_basins)
     cdf_fig = plot_nse_cdf_comparison(model_nse, model_leads, comparison_config, output_dir)
     if cdf_fig is not None:
@@ -104,13 +112,13 @@ def main(comparison_config_path, years):
             wandb.log({"compare/nse_cdf": wandb.Image(cdf_fig)})
         plt.close(cdf_fig)
 
-    # Step 3: per-basin target-time merge, N-way flood-event
+    # Step 4: per-basin target-time merge, N-way flood-event
     # union/classification, hydrographs, and peaks - scanned period-aware so
     # events from disjoint requested years are never spuriously merged.
     run_event_and_peaks_analysis(eval_configs, model_labels, model_leads, shared_basins,
                                   output_dir, use_wandb, periods=periods, years=years)
 
-    # Step 4: combine into the final per-model confusion-matrix/precision/
+    # Step 5: combine into the final per-model confusion-matrix/precision/
     # recall/F1 + peaks summary (same as running model_compare_eval_test.py
     # separately, done here so one invocation produces everything) -
     # SEPARATELY per prediction_threshold spec, one model_comparison_eval_{label}.csv each.

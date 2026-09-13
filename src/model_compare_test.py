@@ -484,6 +484,116 @@ def plot_hydrograph_comparison(window_df, model_labels, model_leads, model_color
     return fig
 
 
+def plot_hydrograph_difference(window_df, model_labels, model_leads, model_color_map, title,
+                                output_dir, filename, hourly_xticks=False, xlim=None):
+    """
+    Fixed-size plot of observed-minus-predicted flow (actual_flow -
+    pred__{label}) per model, to spot where/when predictions diverge most
+    from reality - a horizontal zero line marks perfect agreement. Rain
+    overlay above for reference, same as plot_hydrograph_comparison. No
+    threshold bars: the y-axis is a flow difference, not a flow value, so a
+    threshold line wouldn't mean anything here.
+    """
+    fig, ax = plt.subplots(figsize=(12, 6.5), dpi=150, facecolor="#fafafa")
+    ax.set_facecolor("#ffffff")
+
+    if xlim is not None:
+        ax.set_xlim(*ph._safe_xlim(*xlim))
+
+    ax.axhline(y=0, color='#1e1e1e', linewidth=1.5, alpha=0.8, label='Zero (perfect match)')
+
+    for label in model_labels:
+        col = f'pred__{label}'
+        if col in window_df.columns:
+            lead = model_leads[label]
+            diff = window_df['actual_flow'] - window_df[col]
+            ax.plot(window_df['timestamp'], diff,
+                    color=model_color_map[label], linewidth=1.2, alpha=0.9,
+                    label=f'{label} (+{lead}h) obs−pred')
+
+    ax.set_title(title, fontsize=12, fontweight='bold', pad=15, color='#2c3e50')
+    ax.set_xlabel('Time (target)', fontsize=10.5, labelpad=8)
+    ax.set_ylabel('Observed − Predicted Discharge (m³/s)', fontsize=10.5, labelpad=8)
+    ax.grid(True, linestyle=':', alpha=0.5, color='#b0b0b0')
+
+    if 'rain_mm' in window_df.columns:
+        ax2 = ph.add_rain_overlay(ax, window_df['timestamp'], window_df['rain_mm'])
+        handles1, labels1 = ax.get_legend_handles_labels()
+        handles2, labels2 = ax2.get_legend_handles_labels()
+        ax.legend(handles1 + handles2, labels1 + labels2, loc='upper right',
+                  frameon=True, facecolor='#ffffff', edgecolor='#e2e2e2', fontsize=9)
+    else:
+        ax.legend(loc='upper right', frameon=True, facecolor='#ffffff', edgecolor='#e2e2e2', fontsize=9)
+
+    if hourly_xticks:
+        ax.xaxis.set_major_locator(mdates.HourLocator(interval=2))
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %Hh'))
+        plt.setp(ax.get_xticklabels(), rotation=45, ha='right')
+
+    fig.tight_layout()
+
+    plots_dir = os.path.join(output_dir, "comparison_plots")
+    os.makedirs(plots_dir, exist_ok=True)
+    out_path = os.path.join(plots_dir, filename)
+    fig.savefig(out_path, facecolor=fig.get_facecolor())
+
+    return fig
+
+
+def plot_yearly_overview_hydrographs(model_configs, model_labels, model_leads, shared_basins,
+                                      years, output_dir, use_wandb=False):
+    """
+    Per basin, per INDIVIDUAL requested hydrological year (never merged
+    across adjacent years, unlike dataset.build_year_periods' evaluation
+    grouping): two whole-year plots reusing the same target-time-merged,
+    rain-attached frame merge_basin_reports already builds for event
+    hydrographs - (1) the standard multi-model observed-vs-predicted
+    hydrograph (plot_hydrograph_comparison, unchanged, just given the whole
+    year as its window instead of a padded event window), and (2) the
+    observed-minus-predicted difference plot (plot_hydrograph_difference).
+    Both saved into output_dir/comparison_plots/ alongside event hydrographs,
+    distinguished by filename.
+    """
+    hydro_year_start_month = model_configs[0].get('hydro_year_start_month', 10)
+    shown_threshold_specs = ffe.normalize_threshold_specs(
+        model_configs[0].get('shown_threshold_bars', model_configs[0].get('return_periods_years', []))
+    )
+    model_color_map = build_model_color_map(model_labels)
+
+    print(f"\n[INFO] Building yearly overview hydrographs for {len(shared_basins)} basins "
+          f"x {len(set(years))} year(s)...")
+    for basin in shared_basins:
+        merged_df = merge_basin_reports(basin, model_configs, model_labels, model_leads)
+        if merged_df is None:
+            continue
+
+        for year in sorted(set(years)):
+            year_start, year_end = dataset.build_year_periods([year], hydro_year_start_month)[0]
+            year_start, year_end = pd.Timestamp(year_start), pd.Timestamp(year_end)
+            window_df = merged_df[(merged_df['timestamp'] >= year_start) & (merged_df['timestamp'] <= year_end)]
+            if window_df.empty:
+                continue
+
+            title = (f"Basin {basin} — Hydrological Year {year}\n"
+                      f"{year_start.date()} → {year_end.date()}")
+            fig = plot_hydrograph_comparison(window_df, model_labels, model_leads, model_color_map,
+                                              title, output_dir, f"hydrograph_{basin}_{year}_full.png",
+                                              hourly_xticks=False, xlim=(year_start, year_end),
+                                              shown_threshold_specs=shown_threshold_specs)
+            if use_wandb:
+                wandb.log({f"yearly/{basin}/{year}/hydrograph": wandb.Image(fig)})
+            plt.close(fig)
+
+            diff_title = (f"Basin {basin} — Observed minus Predicted, Hydrological Year {year}\n"
+                          f"{year_start.date()} → {year_end.date()}")
+            diff_fig = plot_hydrograph_difference(window_df, model_labels, model_leads, model_color_map,
+                                                   diff_title, output_dir, f"hydrograph_diff_{basin}_{year}.png",
+                                                   hourly_xticks=False, xlim=(year_start, year_end))
+            if use_wandb:
+                wandb.log({f"yearly/{basin}/{year}/difference": wandb.Image(diff_fig)})
+            plt.close(diff_fig)
+
+
 def run_event_and_peaks_analysis(model_configs, model_labels, model_leads, shared_basins,
                                   output_dir, use_wandb=False, periods=None, years=None):
     """
