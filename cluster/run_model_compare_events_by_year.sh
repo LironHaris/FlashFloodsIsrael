@@ -4,8 +4,8 @@
 #SBATCH --error=/sci/labs/efratmorin/liron.haris/FlashFloodsIsrael/runs/compare_events_by_year_%j.err
 #SBATCH --gres=gpu:1                    # שריון GPU אחד (גם אם ההרצה עצמה נעולה על CPU)
 #SBATCH --cpus-per-task=4              # 4 ליבות עבור טעינת נתונים ופלוטים
-#SBATCH --mem=16G                       # 16 ג'יגה זיכרון RAM
-#SBATCH --time=24:00:00                 # מגבלת זמן להרצה (ניתן לשנות לפי הצורך)
+#SBATCH --mem=24G                       # 24 ג'יגה זיכרון RAM - הועלה מ-16G עבור ריצות עם הרבה שנים/בסיסים
+#SBATCH --time=72:00:00                 # מגבלת זמן להרצה - הועלה מ-24 ל-72 שעות עבור ריצות כבדות (הרבה שנים * הרבה בסיסים * כמה מודלים בו-זמנית); התאימו לפי הצורך ולפי מגבלת הקלאסטר שלכם
 
 # 1. טעינת ה-Conda environment
 source /sci/labs/efratmorin/liron.haris/miniconda3/etc/profile.d/conda.sh
