@@ -6,7 +6,10 @@ Description: Sanity-check variant of train.py - trains identically (same
              basins and hydrological years it came from. Writes two running
              CSVs (val_loss_by_year.csv, val_loss_by_basin.csv) plus two
              pie-chart PNGs every epoch, and a final accumulated-total row +
-             two final pie charts once training finishes. Fixed
+             two final pie charts once training finishes. Also writes a
+             one-time, model-independent validation-set usage audit
+             (val_usage_by_year.csv, val_usage_by_basin.csv - see
+             val_usage_audit.py) once training completes. Fixed
              train/validation splits only - cross_validation-enabled configs
              are rejected (see validate_epoch_with_breakdown's docstring).
 """
@@ -29,6 +32,9 @@ from train import (
 from dataset import get_dataloader
 from model import EALSTMModel
 from flow_quality_check import get_hydrological_year
+from val_usage_audit import (
+    compute_val_usage_breakdown, top_n_basin_ids_by_value, write_usage_csvs, log_usage_to_wandb,
+)
 
 
 def validate_epoch_with_breakdown(model, dataloader, criterion, device, hydro_year_start_month):
@@ -400,6 +406,16 @@ def main(config_path="configs/config.yml"):
         })
     plt.close(final_year_fig)
     plt.close(final_basin_fig)
+
+    # One-time, model-independent audit of the validation set itself (basin-hour
+    # pairs used/non-zero/threshold-crossed) - see val_usage_audit.py.
+    top_basin_ids = top_n_basin_ids_by_value(final_basin_values, top_n_basins)
+    year_usage_counts, basin_usage_counts = compute_val_usage_breakdown(
+        val_loader, config, hydro_year_start_month)
+    year_usage_df, basin_usage_df = write_usage_csvs(
+        year_usage_counts, basin_usage_counts, top_basin_ids, sanity_dir)
+    if use_wandb:
+        log_usage_to_wandb(year_usage_df, basin_usage_df)
 
     plot_training_curves(train_loss_history, val_loss_history, loss_setting, exp_dir)
 
