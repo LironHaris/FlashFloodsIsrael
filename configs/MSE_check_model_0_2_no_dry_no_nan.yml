@@ -193,7 +193,7 @@ learning_rate: 0.0002007
 batch_size: 512
 
 # Number of training epochs
-epochs: 50 #20
+epochs: 26 #20
 
 # adds noise with given std to the labels during training. Leave empty or set to 0 if not used.
 target_noise_std: 0
