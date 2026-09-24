@@ -197,7 +197,8 @@ def _build_hydrograph_figure(plot_df, title, config, hourly_xticks=False, xlim=N
     return fig
 
 
-def plot_basin_storm_event(basin_id, start_window, end_window, config, label=None, event_idx=None):
+def plot_basin_storm_event(basin_id, start_window, end_window, config, label=None, event_idx=None,
+                            output_experiment_name=None):
     """
     Fixed-size hydrograph for a targeted storm event window, with an hourly time axis.
     Loads the basin's visual_report CSV, applies visual_buffer_days padding,
@@ -205,6 +206,13 @@ def plot_basin_storm_event(basin_id, start_window, end_window, config, label=Non
     label/event_idx: when both are given (e.g. 'TP'/'FN'/'FP' from
     compare_flood_events.py), they set the filename and a title suffix so
     real/predicted/matched events are distinguishable at a glance.
+    output_experiment_name: when given, the PNG is saved under
+    run_dir/output_experiment_name/ instead of alongside the report - lets a
+    caller read an existing experiment's report without writing into that
+    experiment's folder (e.g. plot_hydrographs.py's standalone --config-driven
+    entry point pointing at a report from a different run). Every other
+    caller (test.py, quick_test.py, model_compare_test.py) omits this, so the
+    figure saves alongside the report exactly as before.
     """
     exp_dir = _get_exp_dir(config)
     report_path = os.path.join(exp_dir, "visualization_reports", f"visual_report_basin_{basin_id}.csv")
@@ -238,7 +246,9 @@ def plot_basin_storm_event(basin_id, start_window, end_window, config, label=Non
         filename = f"hydrograph_{basin_id}_event{event_idx}_{label}.png"
     else:
         filename = f"hydrograph_basin_{basin_id}_storm.png"
-    _save_figure(fig, exp_dir, filename)
+    save_dir = (os.path.join(config.get('run_dir', './runs/'), output_experiment_name)
+                if output_experiment_name else exp_dir)
+    _save_figure(fig, save_dir, filename)
     return fig
 
 
@@ -289,8 +299,24 @@ def plot_nse_cdf(lead, nse_values, config):
     return fig
 
 
-def main(config_path="configs/config.yml"):
+def main(config_path="configs/config.yml", experiment_name_override=None, output_experiment_name=None):
     config = load_config(config_path)
+    if experiment_name_override:
+        # In-memory only, same trick model_compare_events_by_year.py/plot_events_by_year.py
+        # themselves use to evaluate under a distinct experiment_name - lets this target a
+        # report produced by one of those (runs/{experiment_name}_custom_period[_{years_tag}]/
+        # visualization_reports/...) instead of test.py's plain runs/{experiment_name}/...
+        # location, without editing the config file. Safe because plot_basin_storm_event
+        # never loads model weights (those come from config['checkpoint_path'], untouched
+        # here) - experiment_name only selects which folder to read the report from.
+        config['experiment_name'] = experiment_name_override
+
+    # Independent output location: defaults to the (possibly overridden) read-side
+    # experiment_name above, so a plain standalone run - or --experiment-name alone -
+    # still saves alongside the report exactly as before. --output-experiment-name lets
+    # the PNG/wandb run land somewhere else entirely, so reading someone else's existing
+    # report never writes into that report's own experiment folder.
+    output_experiment_name = output_experiment_name or config['experiment_name']
 
     print("=" * 75)
     print("      Hydrograph Generation & Visualization Engine — Storm Event Slice")
@@ -317,13 +343,15 @@ def main(config_path="configs/config.yml"):
             wandb.login(key=api_key)
         wandb.init(
             project=config.get('wandb_project', 'flash-floods-israel'),
-            name=config['experiment_name'],
+            name=output_experiment_name,
         )
 
-    fig = plot_basin_storm_event(basin_id, start_window, end_window, config)
+    fig = plot_basin_storm_event(basin_id, start_window, end_window, config,
+                                  output_experiment_name=output_experiment_name)
 
     if fig is not None:
-        out_path = os.path.join(_get_exp_dir(config), "hydrograph_plots", f"hydrograph_basin_{basin_id}_storm.png")
+        out_path = os.path.join(config.get('run_dir', './runs/'), output_experiment_name,
+                                 "hydrograph_plots", f"hydrograph_basin_{basin_id}_storm.png")
 
         if use_wandb:
             wandb.log({f"plot_hydrographs/{basin_id}": wandb.Image(fig)})
@@ -345,5 +373,18 @@ if __name__ == "__main__":
                      "have already produced visual_report_basin_<id>.csv.")
     parser.add_argument("--config", type=str, default="configs/config.yml",
                          help="Path to the YAML config file for this run.")
+    parser.add_argument("--experiment-name", type=str, default=None,
+                         help="Override config['experiment_name'] for locating the report to read "
+                              "(and, unless --output-experiment-name is also given, for saving the "
+                              "PNG too), without editing the config file - e.g. "
+                              "'<experiment_name>_custom_period[_<years_tag>]' to target a report "
+                              "produced by model_compare_events_by_year.py/plot_events_by_year.py "
+                              "instead of test.py's plain experiment folder.")
+    parser.add_argument("--output-experiment-name", type=str, default=None,
+                         help="Save the PNG (and name the wandb run) under this experiment name "
+                              "instead of the (possibly --experiment-name-overridden) read location "
+                              "- so reading an existing experiment's report never writes into that "
+                              "experiment's own folder. Defaults to the read-side experiment name.")
     args = parser.parse_args()
-    main(args.config)
+    main(args.config, experiment_name_override=args.experiment_name,
+         output_experiment_name=args.output_experiment_name)
