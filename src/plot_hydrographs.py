@@ -6,12 +6,19 @@ Description: Static Visualization Engine for Multi-Horizon EA-LSTM Flood Forecas
              for targeted storm event inspection.
 """
 
+import argparse
 import os
 import yaml
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
+
+try:
+    import wandb
+    WANDB_AVAILABLE = True
+except ImportError:
+    WANDB_AVAILABLE = False
 
 import find_flood_events as ffe
 
@@ -282,8 +289,8 @@ def plot_nse_cdf(lead, nse_values, config):
     return fig
 
 
-def main():
-    config = load_config("configs/config.yml")
+def main(config_path="configs/config.yml"):
+    config = load_config(config_path)
 
     print("=" * 75)
     print("      Hydrograph Generation & Visualization Engine — Storm Event Slice")
@@ -299,16 +306,44 @@ def main():
     print(f"[INFO] Visual padding: {config.get('visual_buffer_days', 4)} days")
     print("-" * 75)
 
+    # Standalone-only wandb wiring: when plot_basin_storm_event is instead called
+    # by test.py/quick_test.py/model_compare_test.py, THEY own the wandb
+    # login/init/log/finish lifecycle around it - adding it here too would just
+    # double-log, so this block only ever runs from this script's own __main__.
+    use_wandb = config.get('use_wandb', False) and WANDB_AVAILABLE
+    if use_wandb:
+        api_key = config.get('wandb_api_key')
+        if api_key:
+            wandb.login(key=api_key)
+        wandb.init(
+            project=config.get('wandb_project', 'flash-floods-israel'),
+            name=config['experiment_name'],
+        )
+
     fig = plot_basin_storm_event(basin_id, start_window, end_window, config)
 
     if fig is not None:
         out_path = os.path.join(_get_exp_dir(config), "hydrograph_plots", f"hydrograph_basin_{basin_id}_storm.png")
+
+        if use_wandb:
+            wandb.log({f"plot_hydrographs/{basin_id}": wandb.Image(fig)})
         plt.close(fig)
 
         print("\n" + "=" * 75)
         print(f"[✓] Hydrograph saved to: {out_path}")
         print("=" * 75)
 
+    if use_wandb:
+        wandb.finish()
+
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(
+        description="Render one storm-event hydrograph for the basin/window configured in "
+                     "config['plot_hydrographs'], for targeted standalone inspection outside "
+                     "test.py's full evaluation pipeline. Requires that config's test.py run to "
+                     "have already produced visual_report_basin_<id>.csv.")
+    parser.add_argument("--config", type=str, default="configs/config.yml",
+                         help="Path to the YAML config file for this run.")
+    args = parser.parse_args()
+    main(args.config)
