@@ -127,12 +127,13 @@ def load_total_basin_values(basin_loss_csv_path):
     return dict(zip(total_rows['basin_id'], total_rows['value']))
 
 
-def write_usage_csvs(year_counts, basin_counts, top_basin_ids, sanity_dir):
+def write_usage_csvs(year_counts, basin_counts, top_basin_ids, sanity_dir, split_name='val'):
     """
-    Writes sanity_dir/val_usage_by_year.csv (one row per year, sorted
-    ascending) and sanity_dir/val_usage_by_basin.csv (one row per basin in
-    top_basin_ids, in that order). Returns (year_df, basin_df) so callers
-    can log them (e.g. to wandb) without re-reading the CSVs back off disk.
+    Writes sanity_dir/{split_name}_usage_by_year.csv (one row per year,
+    sorted ascending) and sanity_dir/{split_name}_usage_by_basin.csv (one
+    row per basin in top_basin_ids, in that order). Returns (year_df,
+    basin_df) so callers can log them (e.g. to wandb) without re-reading the
+    CSVs back off disk.
     """
     year_rows = [
         {'year': year, 'used_pairs': c['used'], 'nonzero_pairs': c['nonzero'],
@@ -140,7 +141,7 @@ def write_usage_csvs(year_counts, basin_counts, top_basin_ids, sanity_dir):
         for year, c in sorted(year_counts.items())
     ]
     year_df = pd.DataFrame(year_rows)
-    year_df.to_csv(os.path.join(sanity_dir, "val_usage_by_year.csv"), index=False)
+    year_df.to_csv(os.path.join(sanity_dir, f"{split_name}_usage_by_year.csv"), index=False)
 
     basin_rows = [
         {'basin_id': basin_id, 'used_pairs': basin_counts[basin_id]['used'],
@@ -149,17 +150,17 @@ def write_usage_csvs(year_counts, basin_counts, top_basin_ids, sanity_dir):
         for basin_id in top_basin_ids
     ]
     basin_df = pd.DataFrame(basin_rows)
-    basin_df.to_csv(os.path.join(sanity_dir, "val_usage_by_basin.csv"), index=False)
+    basin_df.to_csv(os.path.join(sanity_dir, f"{split_name}_usage_by_basin.csv"), index=False)
 
     return year_df, basin_df
 
 
-def log_usage_to_wandb(year_df, basin_df):
+def log_usage_to_wandb(year_df, basin_df, key_prefix='usage_audit'):
     """Logs both usage-audit tables to the currently active wandb run. Callers
     own the use_wandb check and the wandb.init/wandb.finish lifecycle."""
     wandb.log({
-        'usage_audit/by_year': wandb.Table(dataframe=year_df),
-        'usage_audit/by_basin': wandb.Table(dataframe=basin_df),
+        f'{key_prefix}/by_year': wandb.Table(dataframe=year_df),
+        f'{key_prefix}/by_basin': wandb.Table(dataframe=basin_df),
     })
 
 
