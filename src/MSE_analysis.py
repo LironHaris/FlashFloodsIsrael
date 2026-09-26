@@ -3,7 +3,8 @@ Module: MSE_analysis.py
 Description: Shared engine behind MSE_analysis_train.py / MSE_analysis_test.py -
              the train/test counterpart of train_sanity.py's validation loss
              breakdown + val_usage_audit.py, run against an already-trained
-             model (run_dir/experiment_name/best_model.pt) instead of during
+             model (config['checkpoint_path'], or
+             run_dir/experiment_name/best_model.pt if unset) instead of during
              training. One forward pass over the split attributes the loss to
              basins and hydrological years (CSVs + MSE pie charts, top-N
              basins), then the model-independent usage audit (basin-hour pairs
@@ -81,13 +82,15 @@ def build_split_loader(split_type, config, use_basin_splits):
 
 
 def load_trained_model(config, exp_dir):
-    """Rebuilds the EA-LSTM and loads exp_dir/best_model.pt (same location as
-    test.py), on config['device'] with train_sanity.py's CPU fallback."""
+    """Rebuilds the EA-LSTM and loads config['checkpoint_path'] if set (so the
+    analysis can write into its own experiment dir while evaluating another
+    run's weights), else exp_dir/best_model.pt (same location as test.py).
+    Runs on config['device'] with train_sanity.py's CPU fallback."""
     device_str = config.get('device', 'cpu')
     device = torch.device(device_str if torch.cuda.is_available() or device_str == 'cpu' else 'cpu')
     print(f"[INFO] Execution target hardware configured to: {device}")
 
-    best_checkpoint_path = os.path.join(exp_dir, "best_model.pt")
+    best_checkpoint_path = config.get('checkpoint_path') or os.path.join(exp_dir, "best_model.pt")
     if not os.path.exists(best_checkpoint_path):
         raise FileNotFoundError(f"Missing trained weights at {best_checkpoint_path}. Train the model first.")
 
