@@ -28,6 +28,7 @@ class SingleBasinDataset(Dataset):
 
         # Filter the dynamic data to the union of the provided (possibly disjoint) periods
         dyn_df = pd.concat([dyn_df[start_date:end_date] for start_date, end_date in periods])
+        dyn_df = dyn_df[~dyn_df.index.duplicated(keep='first')]
 
         # Store index dates for evaluation alignment
         self.dates = dyn_df.index
@@ -55,17 +56,35 @@ class SingleBasinDataset(Dataset):
         # by preprocess_static_attributes.py before this file is loaded.
         self.x_static = basin_static_row[self.static_feature_names].iloc[0].values.astype(np.float32)
 
-        # Build valid sample indices: skip windows where any forecast target is still NaN
+        # Build valid sample indices: skip windows with any NaN input or any NaN forecast target.
+        # (vectorized; same rule as the original per-window loop)
         max_lead = max(self.forecast_lead_times)
-        n_potential = len(self.x_dynamic) - self.seq_length - max_lead + 1
-        self.valid_indices = [
-            i for i in range(max(0, n_potential))
-            if not np.isnan(self.x_dynamic[i : i + self.seq_length]).any()
-            and not any(
-                np.isnan(self.y[i + self.seq_length - 1 + lead]).any()
-                for lead in self.forecast_lead_times
-            )
-        ]
+        n_potential = max(0, len(self.x_dynamic) - self.seq_length - max_lead + 1)
+        starts = np.arange(n_potential)
+        targets = starts + self.seq_length - 1
+
+        nan_rows = np.isnan(self.x_dynamic).any(axis=1).astype(np.int64)
+        csum = np.concatenate([[0], np.cumsum(nan_rows)])
+        ok = (csum[starts + self.seq_length] - csum[starts]) == 0
+        y_nan = np.isnan(self.y).any(axis=1)
+        for lead in self.forecast_lead_times:
+            ok &= ~y_nan[targets + lead]
+
+        # Optional: a per-hour boolean column that must be True at the target hour
+        # (e.g. 'window_ok' written by prepare_radar_inputs.py for the radar gap rule).
+        filter_col = config.get('sample_filter_column')
+        if filter_col:
+            flt = dyn_df[filter_col].astype(str).str.lower().isin(['true', '1', '1.0']).to_numpy()
+            ok &= flt[targets]
+
+        # Optional: windows (inputs + all leads) must span consecutive hours, so a window can never
+        # stitch together rows across a removed NaN stretch or across disjoint train periods.
+        if config.get('require_contiguous_windows', False) and n_potential > 0:
+            hours = (self.dates.values.astype('datetime64[h]').astype(np.int64))
+            span = hours[targets + max_lead] - hours[starts]
+            ok &= span == (self.seq_length - 1 + max_lead)
+
+        self.valid_indices = starts[ok].tolist()
         self.num_samples = len(self.valid_indices)
 
     def __len__(self):

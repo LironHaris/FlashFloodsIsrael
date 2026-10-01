@@ -165,11 +165,14 @@ def main():
     # Step 1: Ingest setup assets and configuration parameters
     #CONFIG_PATH = "configs/config.yml"
     #config = load_config(CONFIG_PATH)
-    if os.path.exists("configs/config_temp.yml"):
+    if os.environ.get("FLOODS_CONFIG"):
+        CONFIG_PATH = os.environ["FLOODS_CONFIG"]          # explicit per-run config (e.g. radar runs)
+    elif os.path.exists("configs/config_temp.yml"):
         CONFIG_PATH = "configs/config_temp.yml"
     else:
         CONFIG_PATH = "configs/config.yml"
-        
+    print(f"[INFO] Using config: {CONFIG_PATH}")
+
     config = load_config(CONFIG_PATH)
     
     if os.path.exists("configs/config_temp.yml"):

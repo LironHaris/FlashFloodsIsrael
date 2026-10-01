@@ -250,6 +250,12 @@ def generate_basin_summary_table(basin, df, config, output_dir):
                 'NSE': nse_per_lead.get(lead),
             })
 
+    if not rows:
+        # No return-period thresholds available for this basin: still report NSE per lead time.
+        rows = [{'Lead Time (h)': lead, 'Return Period (yr)': None, 'Threshold (m³/s)': None,
+                 'Flow Exceedances': None, 'Hits': None, 'Hit Rate': None, 'False Alarms': None,
+                 'NSE': nse_per_lead.get(lead)} for lead in active_leads]
+
     summary_df = pd.DataFrame(rows)
     csv_path = os.path.join(output_dir, f"summary_table_basin_{basin}.csv")
     summary_df.to_csv(csv_path, index=False)
@@ -261,7 +267,9 @@ def generate_basin_summary_table(basin, df, config, output_dir):
 
 def main():
     # Step 1: Config ingestion and model setup
-    config = load_config("configs/config.yml")
+    config_path = os.environ.get("FLOODS_CONFIG", "configs/config.yml")
+    print(f"[INFO] Using config: {config_path}")
+    config = load_config(config_path)
     model, device, exp_dir = setup_evaluation(config)
 
     # Step 2: Initialize sterile test split tracking arrays
