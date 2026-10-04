@@ -28,6 +28,7 @@ class SingleBasinDataset(Dataset):
 
         # Filter the dynamic data to the union of the provided (possibly disjoint) periods
         dyn_df = pd.concat([dyn_df[start_date:end_date] for start_date, end_date in periods])
+        dyn_df = dyn_df[~dyn_df.index.duplicated(keep='first')]
 
         # Store index dates for evaluation alignment
         self.dates = dyn_df.index
@@ -84,14 +85,28 @@ class SingleBasinDataset(Dataset):
         window_nan_pct = (csum[starts + self.seq_length] - csum[starts]) / self.seq_length * 100
         input_ok = np.all(window_nan_pct <= allowed_nan_pct[None, :], axis=1)
 
-        self.valid_indices = [
-            i for i in range(n_potential)
-            if input_ok[i]
-            and not any(
-                np.isnan(self.y[i + self.seq_length - 1 + lead]).any()
-                for lead in self.forecast_lead_times
-            )
-        ]
+        # Same rule as before (input tolerance + no NaN target at any lead), vectorized.
+        targets = starts + self.seq_length - 1
+        ok = input_ok.copy()
+        y_nan = np.isnan(self.y).any(axis=1)
+        for lead in self.forecast_lead_times:
+            ok &= ~y_nan[targets + lead]
+
+        # [radar] Optional: a per-hour boolean column that must be True at the target hour
+        # ('window_ok' from prepare_radar_inputs.py = the radar gap rule for the window ending there).
+        filter_col = config.get('sample_filter_column')
+        if filter_col and n_potential > 0:
+            flt = dyn_df[filter_col].astype(str).str.lower().isin(['true', '1', '1.0']).to_numpy()
+            ok &= flt[targets]
+
+        # [radar] Optional: inputs + all leads must span consecutive hours, so a window never stitches
+        # rows across a removed stretch or across disjoint periods.
+        if config.get('require_contiguous_windows', False) and n_potential > 0:
+            hours = self.dates.values.astype('datetime64[h]').astype(np.int64)
+            span = hours[targets + max_lead] - hours[starts]
+            ok &= span == (self.seq_length - 1 + max_lead)
+
+        self.valid_indices = starts[ok].tolist()
         self.num_samples = len(self.valid_indices)
 
     def __len__(self):
@@ -187,7 +202,9 @@ def _load_basin_ids(basin_list_file, config, use_basin_splits, split_type='train
     # If temporal split is selected, skip files and load every single basin dynamically
     if not use_basin_splits:
         dyn_dir = config['processed_timeseries_dir']
-        all_basins = [f.replace('.csv', '') for f in os.listdir(dyn_dir) if f.endswith('.csv')]
+        excluded = set(config.get('exclude_basins') or [])        # [radar] e.g. flow-QC exclusions
+        all_basins = [f.replace('.csv', '') for f in os.listdir(dyn_dir)
+                      if f.endswith('.csv') and f.replace('.csv', '') not in excluded]
         if split_type == 'train':
             print(f"[Info] Spatial splits disabled. Automatically loaded all {len(all_basins)} basins for temporal split.")
         return all_basins

@@ -22,7 +22,10 @@ import yaml
 
 
 def main():
-    cfg = yaml.safe_load(open(os.environ.get('FLOODS_CONFIG', 'configs/config.yml'), encoding='utf-8'))
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--config', default=os.environ.get('FLOODS_CONFIG', 'configs/config.yml'))
+    cfg = yaml.safe_load(open(ap.parse_args().config, encoding='utf-8'))
     src = cfg['static_source_dir']
     out = cfg['normalized_static_attributes_file']
     add_ids = [str(b) for b in cfg.get('static_extend_basins', [])]

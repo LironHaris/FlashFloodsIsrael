@@ -21,6 +21,6 @@ source /sci/labs/efratmorin/liron.haris/miniconda3/etc/profile.d/conda.sh
 conda activate flashfloods
 export FLOODS_CONFIG=configs/SRradar_B_mean_mask_L0.yml     # data settings are identical in all 8 configs
 
-python src/prepare_radar_inputs.py
-python src/extend_static_attributes.py
+python src/prepare_radar_inputs.py --config "$FLOODS_CONFIG"
+python src/extend_static_attributes.py --config "$FLOODS_CONFIG"
 echo "[prepare] done $(date)"

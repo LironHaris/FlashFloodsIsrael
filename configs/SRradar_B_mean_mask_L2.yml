@@ -4,9 +4,9 @@ use_wandb: true
 wandb_project: flash-floods-israel
 run_dir: /sci/labs/efratmorin/ariel.monzon/SR_radar/runs/
 use_basin_splits: false
-train_basin_file: data/basin_lists/israel_train.txt
+train_basin_file: configs/basins_radar_52.txt
 validation_basin_file: data/basin_lists/israel_val.txt
-test_basin_file: data/basin_lists/israel_test.txt
+test_basin_file: configs/basins_radar_shared48.txt
 train_periods:
 - start_date: '2012-10-01 08:00:00'
   end_date: '2016-09-30 07:00:00'
@@ -228,7 +228,7 @@ min_years_for_gev: 5
 gev_plausibility_scalar: 10
 visual_buffer_days: 4
 event_merge_gap_hours: 6
-find_flood_events_output: ./data/processed/flood_events/flood_events_all_basins.csv
+find_flood_events_output: /sci/labs/efratmorin/ariel.monzon/SR_radar/runs/SRradar_B_mean_mask_L2/flood_events_all_basins.csv
 forecast_lead_times:
 - 2
 plot_hydrographs:
@@ -256,3 +256,5 @@ gap_max_run: 2
 gap_max_total: 6
 sample_filter_column: window_ok
 require_contiguous_windows: true
+prediction_threshold: 2
+rain_overlay_column: radar_mean_mm

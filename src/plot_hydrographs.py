@@ -83,16 +83,23 @@ def load_basin_rain_series(basin, config):
     if not os.path.exists(processed_path):
         return None
 
-    df = pd.read_csv(processed_path, usecols=['date', 'hourly_precipitation'])
+    # [radar] which rain to overlay (default: gauge hourly_precipitation, as before)
+    rain_col = config.get('rain_overlay_column', 'hourly_precipitation')
+    header = pd.read_csv(processed_path, nrows=0).columns
+    if rain_col not in header:
+        return None
+    df = pd.read_csv(processed_path, usecols=['date', rain_col] + (['radar_mask'] if 'radar_mask' in header else []))
     df['timestamp'] = pd.to_datetime(df['date'])
 
     availability_df = pd.read_csv(config['availability_report_file']).set_index('gauge_id')
     if basin not in availability_df.index:
         return None
-    mean = availability_df.loc[basin, 'hourly_precipitation_mean']
-    std = availability_df.loc[basin, 'hourly_precipitation_std']
+    mean = availability_df.loc[basin, f'{rain_col}_mean']
+    std = availability_df.loc[basin, f'{rain_col}_std']
 
-    df['rain_mm'] = df['hourly_precipitation'] * std + mean
+    df['rain_mm'] = df[rain_col] * std + mean
+    if rain_col.startswith('radar_') and 'radar_mask' in df.columns:
+        df.loc[df['radar_mask'] == 0, 'rain_mm'] = np.nan      # radar gaps: no bar instead of 0 mm
     return df[['timestamp', 'rain_mm']]
 
 

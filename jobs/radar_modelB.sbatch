@@ -34,7 +34,7 @@ mkdir -p "$MPLCONFIGDIR" "$WANDB_CACHE_DIR" "$WANDB_CONFIG_DIR" "$WANDB_DIR" "$L
 # folder:  cp ~/.netrc /sci/labs/efratmorin/ariel.monzon/.netrc && chmod 600 /sci/labs/efratmorin/ariel.monzon/.netrc
 if [ -f "$LAB/.netrc" ]; then export NETRC="$LAB/.netrc"; fi
 
-export FLOODS_CONFIG="configs/${RUN}.yml"
+CFG="configs/${RUN}.yml"; export FLOODS_CONFIG="$CFG"
 echo "[job] run=${RUN} config=${FLOODS_CONFIG} host=$(hostname) start=$(date)"
 echo "[job] python=$(which python)"; nvidia-smi || true
 
@@ -46,7 +46,7 @@ fi
 
 # train, then test   (TEST_ONLY=1 re-runs only the test on the saved best_model.pt)
 if [ "${TEST_ONLY:-0}" != "1" ]; then
-  python src/train.py
+  python src/train.py --config "$CFG"
 fi
-python src/test.py
+python src/test.py --config "$CFG"
 echo "[job] done $(date)"

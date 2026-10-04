@@ -72,6 +72,16 @@ def prepare_basin(path, config):
         df[f] = (df[f] - mean) / std
         stats[f'{f}_mean'], stats[f'{f}_std'] = mean, std
 
+    # gauge rain (the pipeline's original input), z-scored per basin from train periods as in
+    # preprocess_dynamic_data.py - kept for rain overlays, gauge-control runs and model 2
+    if 'hourly_precipitation' in df.columns:
+        g_mean = float(np.nanmean(train_slice['hourly_precipitation']))
+        g_std = float(np.nanstd(train_slice['hourly_precipitation']))
+        if not np.isfinite(g_std) or g_std == 0.0:
+            g_mean, g_std = 0.0, 1.0
+        df['hourly_precipitation'] = (df['hourly_precipitation'] - g_mean) / g_std
+        stats['hourly_precipitation_mean'], stats['hourly_precipitation_std'] = g_mean, g_std
+
     flow_mean = float(np.nanmean(train_slice['Flow_m3_sec']))
     flow_std = float(np.nanstd(train_slice['Flow_m3_sec']))
     if not np.isfinite(flow_std) or flow_std == 0.0:
@@ -80,6 +90,8 @@ def prepare_basin(path, config):
     df['window_ok'] = window_ok_mask(df['radar_flag'].to_numpy(), config['seq_length'],
                                      config.get('gap_max_run', 2), config.get('gap_max_total', 6))
     keep = ['Flow_m3_sec', *feats, 'radar_mask', 'radar_flag', 'window_ok']
+    if 'hourly_precipitation' in df.columns:
+        keep.insert(1, 'hourly_precipitation')
     out = df[keep]
     report = {'availability_pct': float(df['Flow_m3_sec'].notna().mean() * 100),
               'flow_mean': flow_mean, 'flow_std': flow_std,
