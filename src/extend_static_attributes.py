@@ -35,6 +35,23 @@ def main():
     raw = raw.set_index('gauge_id')
     cols = [c for c in norm.columns if c != 'gauge_id' and c in stats.index and c in raw.columns]
 
+    # Basins absent from the source raw file can come from a fuller raw file (same origin), accepted only
+    # if it agrees with the source raw file on every basin and attribute they share.
+    extra_path = cfg.get('static_extra_raw_file')
+    if extra_path:
+        extra = pd.read_csv(extra_path)
+        extra['gauge_id'] = extra['gauge_id'].astype(str)
+        extra = extra.set_index('gauge_id')
+        shared = raw.index.intersection(extra.index)
+        diff_raw = float(np.nanmax(np.abs(raw.loc[shared, cols].values.astype(float)
+                                          - extra.loc[shared, cols].values.astype(float))))
+        print(f"[check] extra raw file vs source raw file on {len(shared)} shared basins: max difference = {diff_raw:.3g}")
+        if diff_raw > 1e-9:
+            raise SystemExit("[ERROR] extra raw statics disagree with the source raw file - not writing anything")
+        new = [b for b in extra.index if b not in raw.index]
+        raw = pd.concat([raw, extra.loc[new, raw.columns.intersection(extra.columns)]])
+        print(f"[INFO] raw rows taken from the extra file for {len(new)} basins")
+
     def z(gid):
         return (raw.loc[gid, cols] - stats.loc[cols, 'mean']) / stats.loc[cols, 'std']
 

@@ -253,6 +253,7 @@ static_extend_basins:
 - il_17110
 - il_17117
 - il_18131
+static_extra_raw_file: /sci/labs/efratmorin/ariel.monzon/SR_radar/static/static_attributes_nh_all95.csv
 exclude_basins:
 - il_17123
 gap_max_run: 2

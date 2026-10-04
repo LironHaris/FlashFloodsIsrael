@@ -25,6 +25,9 @@ COMMON = {
     # (built once by src/extend_static_attributes.py; evidence in RADAR_INTEGRATION_REPORT.md)
     "static_source_dir": f"{SCI}/liron.haris/FlashFloodsIsrael/data/processed/static",
     "static_extend_basins": ["il_14115", "il_17110", "il_17117", "il_18131"],
+    # Liron's raw statics on the cluster lack these basins; the full 95-basin raw file (floods/data/static/
+    # static_attributes_nh.csv) is uploaded here and must agree with hers on all shared basins
+    "static_extra_raw_file": f"{RADAR}/static/static_attributes_nh_all95.csv",
     "normalized_static_attributes_file": f"{RADAR}/static/static_attributes_normalized_plus4.csv",
     # flow-QC exclusion: il_17123 - 2013-01-08 official peak 99 m3/s but hourly series 0.0; max 0.42 m3/s 2012-23
     "exclude_basins": ["il_17123"],
