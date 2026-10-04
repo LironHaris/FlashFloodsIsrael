@@ -99,6 +99,16 @@ def main(config):
 
     # Core pipeline execution
     merged = load_and_merge(raw_static_dir)
+
+    # Drop basins manually flagged HIS_assessment == 9 in station quality.csv
+    # before anything else - clean_missing_features()'s column-NaN-drop and the
+    # mean/std/normalization below must never be influenced by excluded basins.
+    station_quality_df = pd.read_csv(config['station_quality_file'])
+    his_excluded_basins = set(
+        station_quality_df.loc[station_quality_df['HIS_assessment'] == 9, 'station_id']
+    )
+    merged = merged[~merged['gauge_id'].isin(his_excluded_basins)].reset_index(drop=True)
+
     final_df = clean_missing_features(merged)
 
     # Compute mean and standard deviation per feature, across all basins

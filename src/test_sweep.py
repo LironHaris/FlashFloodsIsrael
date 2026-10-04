@@ -162,9 +162,11 @@ def main():
     parser.add_argument('sweep_id', help='W&B sweep ID')
     parser.add_argument('--top', type=int, default=5,
                         help='Number of top runs to compare (default: 5)')
+    parser.add_argument('--config', type=str, default='configs/config.yml',
+                        help='Path to the base config the swept runs were registered against.')
     args = parser.parse_args()
 
-    base_config = load_config('configs/config.yml')
+    base_config = load_config(args.config)
     sweep_config = load_config('configs/sweep.yaml')
 
     api_key = base_config.get('wandb_api_key')
@@ -208,7 +210,8 @@ def main():
             continue
 
         print("  Building test dataset ...")
-        test_dataset = IsraelBasinsDataset(split_type='test', config=config, use_basin_splits=False)
+        test_dataset = IsraelBasinsDataset(split_type='test', config=config,
+                                           use_basin_splits=config.get('use_basin_splits', True))
         print(f"  Test basins: {len(test_dataset.basins)}")
 
         nse_accumulator = {lead: [] for lead in lead_times}

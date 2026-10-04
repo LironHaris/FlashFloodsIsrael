@@ -8,10 +8,13 @@ The outputs serve as a robust foundational dataset for deep learning rainfall-ru
 
 Pipeline Architecture & Functional Stages:
 1. Hourly Resampling:
-   Transforms raw temporal records into uniform 1-hour block intervals. To preserve the 
-   physical constraints of hydro-meteorological variables, cumulative features (precipitation) 
-   are aggregated using a localized temporal sum, while continuous state features (discharge/flow) 
-   are aggregated via a temporal mean. Bounds are defined using 'left' inclusive indexing.
+   Transforms raw temporal records into uniform 1-hour block intervals. To preserve the
+   physical constraints of hydro-meteorological variables, cumulative features (precipitation)
+   are aggregated using a localized temporal sum, while continuous state features (discharge/flow)
+   are aggregated via a temporal mean. Both aggregations require every raw sub-hourly reading in
+   the hour to be present and non-NaN; if any reading is missing, the hour's result is NaN rather
+   than a value silently computed from incomplete data. Bounds are defined using 'left' inclusive
+   indexing.
 
 2. Timeline Realignment & Gap Injection:
    Enforces a strict, continuous hourly index mapped between the basin's earliest available 
@@ -20,17 +23,21 @@ Pipeline Architecture & Functional Stages:
    This maximizes historical training data per individual basin.
 
 3. Quantitative Quality Analysis:
-   Evaluates gauge reporting reliability by computing the percentage of valid, non-NaN flow 
-   observations. Crucially, this operation runs on the aligned dataset BEFORE any data filling 
-   takes place. This prevents down-stream artificial inflation of reporting health scores.
+   Evaluates gauge reporting reliability by computing the percentage of valid, non-NaN flow
+   observations, and the percentage of hours with BOTH flow and rain simultaneously available.
+   Basins below a configured combined-availability threshold are excluded entirely rather than
+   processed further (see min_combined_availability_pct in config).
 
-4. Domain-Specific Imputation:
-   Applies a physics-informed approach to missing data reconstruction:
-   - Precipitation ('hourly_precipitation'): Missing values are imputed with 0.0. This assumes no 
-     unrecorded meteorological forcing events took place during transmission drops.
-   - Streamflow ('Flow_m3_sec'): Left explicitly as NaN. Imputing artificial river discharge 
-     values would severely compromise the learning capabilities of the neural model and induce 
-     false physical behaviors.
+4. No Fabrication Policy:
+   Streamflow ('Flow_m3_sec') gaps are never imputed - left explicitly as NaN. Precipitation
+   ('hourly_precipitation') gaps are also left as NaN, with one narrow exception: raw sub-hourly
+   rain readings missing for at most 30 minutes (a short sensor blip) are linearly interpolated
+   between their nearest real neighbors before hourly aggregation (see MAX_RAIN_GAP_STEPS /
+   _interpolate_short_rain_gaps). Longer rain gaps, and any gap touching the start/end of a
+   basin's record, are still left as real NaN. Inventing values beyond this narrow case would
+   compromise the learning capabilities of the neural model and induce false physical behaviors.
+   Any training window touching a remaining NaN is excluded downstream by dataset.py's validity
+   check.
 """
 
 import os
@@ -38,6 +45,11 @@ import yaml
 import pandas as pd
 import numpy as np
 from tqdm import tqdm
+
+import basin_splits as bs
+import flow_quality_check as fqc
+import screen_dry_years as sdy
+import nan_flow_days as nfd
 
 def load_config(yaml_path):
     """Load the YAML configuration file."""
@@ -47,18 +59,63 @@ def load_config(yaml_path):
 # --------------------------------------------------------------------------------
 # 1. Resampling Function
 # --------------------------------------------------------------------------------
+
+# Raw sub-hourly rain readings are on a fixed 10-minute native cadence, so a
+# 30-minute gap is at most 3 consecutive missing readings.
+MAX_RAIN_GAP_STEPS = 3
+
+
+def _interpolate_short_rain_gaps(rain_series, max_gap_steps):
+    """
+    Linearly interpolates interior NaN runs in `rain_series` (a regularly
+    spaced 10-min series) that are at most `max_gap_steps` readings long,
+    using the two nearest real (non-NaN) values bounding each qualifying
+    run. Longer runs, and any run touching the start/end of the series (no
+    bounding value on one side), are left untouched as real NaN - same
+    run-boundary detection pattern as drop_long_flow_nan_stretches below.
+    """
+    nan_mask = rain_series.isna().to_numpy()
+    padded = np.concatenate([[False], nan_mask, [False]])
+    starts = np.where(~padded[:-1] & padded[1:])[0]
+    ends = np.where(padded[:-1] & ~padded[1:])[0]
+
+    interpolated = rain_series.interpolate(method='linear', limit_area='inside')
+    result = rain_series.copy()
+    for s, e in zip(starts, ends):
+        if (e - s) <= max_gap_steps:
+            result.iloc[s:e] = interpolated.iloc[s:e]
+    return result
+
+
 def resample_to_hourly(df):
     """
-    Resample raw data to hourly resolution.
-    Flow is averaged, rain is summed.
+    Resample raw data to hourly resolution. An hour's flow or rain value is only
+    computed when every raw sub-hourly reading in that hour is present and non-NaN;
+    otherwise the result is NaN. This avoids pandas' default aggregation behavior,
+    which would otherwise fabricate a plausible-looking value from incomplete data:
+    sum() treats an all-NaN/empty group as 0.0, and mean() with its default
+    skipna=True silently averages over just the present sub-readings.
+
+    Before aggregation, short (<=30min) NaN gaps in the raw rain readings are
+    linearly interpolated (see _interpolate_short_rain_gaps), so a lone missed
+    reading no longer NaNs out its whole hour; longer gaps are left as-is and
+    still propagate to a NaN hour as before.
     """
     df['date'] = pd.to_datetime(df['date'])
     df.set_index('date', inplace=True)
-    
+
+    df['mean_rain'] = _interpolate_short_rain_gaps(df['mean_rain'], MAX_RAIN_GAP_STEPS)
+
+    def strict_sum(s):
+        return np.nan if len(s) == 0 or s.isna().any() else s.sum()
+
+    def strict_mean(s):
+        return np.nan if len(s) == 0 or s.isna().any() else s.mean()
+
     # Standardized to use 'hourly_precipitation' as the core dynamic feature name
     resampled = df.resample('h', closed='left', label='left').agg({
-        'Flow_m3_sec': 'mean',
-        'mean_rain': 'sum'
+        'Flow_m3_sec': strict_mean,
+        'mean_rain': strict_sum
     })
     resampled = resampled.rename(columns={'mean_rain': 'hourly_precipitation'})
     return resampled
@@ -76,49 +133,61 @@ def align_to_timeline(resampled_df, start_date, end_date):
     return aligned_df
 
 # --------------------------------------------------------------------------------
-# 3. Quality Analysis Function
+# 3. Quality Analysis Functions
 # --------------------------------------------------------------------------------
 def analyze_data_quality(aligned_df):
     """
     Calculate the percentage of available (non-NaN) flow data.
-    Runs on the aligned data BEFORE imputation to maintain accuracy.
     """
     flow_available_pct = aligned_df['Flow_m3_sec'].notna().mean() * 100
     return flow_available_pct
 
-# --------------------------------------------------------------------------------
-# 4. Imputation and Cleaning Function
-# --------------------------------------------------------------------------------
-def impute_missing_rain(aligned_df):
+def analyze_combined_availability(aligned_df):
     """
-    Fill missing precipitation values with 0. 
-    Flow data is left as NaN to avoid training on artificial discharge data.
+    Calculate the percentage of hours where both Flow_m3_sec and
+    hourly_precipitation are simultaneously non-NaN. Used to decide whether a
+    basin has enough real (non-fabricated) data to be worth training on at all.
     """
-    clean_df = aligned_df.copy()
-    clean_df['hourly_precipitation'] = clean_df['hourly_precipitation'].fillna(0)
-    return clean_df
+    combined_available_pct = (
+        aligned_df['Flow_m3_sec'].notna() & aligned_df['hourly_precipitation'].notna()
+    ).mean() * 100
+    return combined_available_pct
+
+def combined_availability_for_periods(aligned_df, periods):
+    """
+    Same as analyze_combined_availability, but restricted to the union of the
+    given (start_date_or_None, end_date) slices of aligned_df. Used to check
+    combined availability separately per split (train/val/test), since a
+    basin can be well-observed in one split and sparse in another.
+    """
+    slices = [aligned_df.loc[start:end] for start, end in periods]
+    combined = pd.concat(slices)
+    return analyze_combined_availability(combined) if not combined.empty else 0.0
 
 # --------------------------------------------------------------------------------
-# 5. Cumulative Rain Feature Function
+# 4. Cumulative Rain Feature Function
 # --------------------------------------------------------------------------------
 def add_cumulative_rain_features(df, windows):
     """
     Add trailing rolling-sum cumulative rain columns to an hourly-resolution
-    dataframe that already contains 'hourly_precipitation' (imputed, no NaN gaps).
-    Uses min_periods=1 so the first (hours - 1) rows of a basin record get a
-    partial-window sum rather than NaN.
+    dataframe. hourly_precipitation may contain real NaN gaps (no imputation
+    upstream). min_periods=hours means the full trailing window must be
+    NaN-free for a value to be produced - any missing hour inside the window,
+    or insufficient history at a basin's start of record, yields NaN, which
+    propagates downstream so dataset.py excludes that training window instead
+    of silently summing over a gap.
     """
     result = df.copy()
     for w in windows:
         result[w['name']] = (
             result['hourly_precipitation']
-            .rolling(window=w['hours'], min_periods=1)
+            .rolling(window=w['hours'], min_periods=w['hours'])
             .sum()
         )
     return result
 
 # --------------------------------------------------------------------------------
-# 6. Long NaN Stretch Removal Function
+# 5. Long NaN Stretch Removal Function
 # --------------------------------------------------------------------------------
 def drop_long_flow_nan_stretches(df, seq_length):
     """
@@ -169,13 +238,27 @@ def process_dynamic_data(config):
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(os.path.dirname(report_path), exist_ok=True)
 
+    # Basins manually flagged HIS_assessment == 9 in station quality.csv are
+    # excluded entirely, before any per-basin processing - they never get a
+    # processed CSV or contribute to the availability report / basin splits.
+    station_quality_df = pd.read_csv(config['station_quality_file'])
+    his_excluded_basins = set(
+        station_quality_df.loc[station_quality_df['HIS_assessment'] == 9, 'station_id']
+    )
+
     availability_records = []
     csv_files = [f for f in os.listdir(input_dir) if f.endswith('.csv')]
 
     # Run the pipeline on each file
     for file_name in tqdm(csv_files, desc="Processing Gauges", unit="file"):
+        basin_id = file_name.replace('.csv', '')
+        if basin_id in his_excluded_basins:
+            availability_records.append({'gauge_id': basin_id, 'excluded': True})
+            tqdm.write(f"Skipped {file_name}: HIS_assessment == 9 (excluded by station quality review).")
+            continue
+
         raw_df = pd.read_csv(os.path.join(input_dir, file_name))
-        
+
         # Step 1: Resample to hourly resolution
         hourly_df = resample_to_hourly(raw_df)
         
@@ -186,39 +269,136 @@ def process_dynamic_data(config):
         # Align to the full timeline starting from the basin's individual birth date
         aligned_df = align_to_timeline(hourly_df, basin_start_date, END_DATE)
         
-        # Step 3: Check original data quality (before imputation)
+        # Step 3: Check original data quality (informational only, used in the
+        # per-basin console log below - not written to the availability report).
         flow_available = analyze_data_quality(aligned_df)
-        
-        # Step 4: Impute missing rain values with 0
-        clean_df = impute_missing_rain(aligned_df)
+
+        # Step 3b: Exclude basins with no viable split at all - if a basin fails the
+        # combined (flow AND rain) availability threshold in EVERY one of train/val/test,
+        # there's nothing useful to do with it. A basin passing in just one or two splits
+        # still gets processed here; basin_splits.py decides per-split membership from
+        # these same three values, so e.g. good-train/good-test/no-val data is still used
+        # for train and test, just left out of israel_val.txt.
+        # Checked before any further processing so excluded basins skip the rest of
+        # the pipeline entirely and never get a processed timeseries CSV written -
+        # dataset.py already treats a missing CSV as "basin not available."
+        train_bounds = [(p.get('start_date'), p['end_date']) for p in config['train_periods']]
+        combined_train = combined_availability_for_periods(aligned_df, train_bounds)
+        combined_val = combined_availability_for_periods(
+            aligned_df, [(config['validation_start_date'], config['validation_end_date'])])
+        combined_test = combined_availability_for_periods(
+            aligned_df, [(config['test_start_date'], config['test_end_date'])])
+
+        min_pct = config['min_combined_availability_pct']
+        if combined_train < min_pct and combined_val < min_pct and combined_test < min_pct:
+            availability_records.append({
+                'gauge_id': file_name.replace('.csv', ''),
+                'combined_availability_pct_train': combined_train,
+                'combined_availability_pct_val': combined_val,
+                'combined_availability_pct_test': combined_test,
+                'excluded': True,
+            })
+            tqdm.write(
+                f"Skipped {file_name}: combined availability train={combined_train:.2f}% "
+                f"val={combined_val:.2f}% test={combined_test:.2f}%, below the {min_pct}% threshold in every split."
+            )
+            continue
+
+        # Step 4: Rain gaps are left as real NaN here (no imputation), the same way
+        # Flow_m3_sec already is. dataset.py's existing valid_indices check already
+        # excludes any training window touching a NaN in either, so this is the only
+        # change needed to make rain "skip" instead of fabricating 0.0 for gaps.
+        clean_df = aligned_df.copy()
 
         # Step 4b: Add long-window cumulative (trailing rolling-sum) rain features.
-        # Must run after imputation (so gaps do not poison rolling sums) and before
-        # drop_long_flow_nan_stretches (so rolling sees a fully contiguous hourly index).
+        # Must run before drop_long_flow_nan_stretches (so rolling sees a fully
+        # contiguous hourly index).
         clean_df = add_cumulative_rain_features(clean_df, config['cumulative_rain_windows'])
 
         # Step 5: Remove NaN stretches longer than seq_length (untrainable dead weight)
         clean_df, n_dropped = drop_long_flow_nan_stretches(clean_df, seq_length=config['seq_length'])
 
-        # Compute per-basin flow mean/std from the training periods only (np.nanmean/nanstd ignore
-        # NaN entries). These are fixed per-basin normalization constants used to z-score the flow
-        # target in dataset.py, so they must reflect train-period variability, not the full
-        # train+val+test series. Both are drawn from the same slice/fallback branch so they always
-        # describe the same underlying sample.
-        train_slice = pd.concat([
-            clean_df.loc[p.get('start_date'):p['end_date']] for p in config['train_periods']
-        ])
+        # Normalization now happens in Pass 3, after dry-year and
+        # nan_flow_days screening (see below) - baking it in here, before
+        # those rows get dropped, would make the stats reflect data that no
+        # longer exists in the final file. Save the unnormalized,
+        # screening-pending series for now; Pass 3 re-reads and finalizes it.
+        availability_records.append({
+            'gauge_id': file_name.replace('.csv', ''),
+            'combined_availability_pct_train': combined_train,
+            'combined_availability_pct_val': combined_val,
+            'combined_availability_pct_test': combined_test,
+            'excluded': False,
+        })
+
+        output_path = os.path.join(output_dir, file_name)
+        clean_df.to_csv(output_path, index_label='date')
+
+        tqdm.write(f"Pass 1 done {file_name}: Processed from {basin_start_date} to {END_DATE}. {flow_available:.2f}% flow data. Dropped {n_dropped} rows (long NaN stretches).")
+
+    # Write the intermediate availability report (combined_availability_pct_*
+    # only - flow/rain normalization stats are added in Pass 3 below). This
+    # must exist on disk before Pass 2, since fqc.run_quality_check's
+    # is_year_used reads combined_availability_pct_* from this file.
+    report_df = pd.DataFrame(availability_records)
+    report_df.to_csv(report_path, index=False)
+
+    # Regenerate the basin split lists from exactly the basins that passed the
+    # availability gate this run, so israel_train/val/test.txt can never
+    # reference a basin with no processed CSV on disk. Membership per split is
+    # decided inside create_basin_splits from each basin's own per-split
+    # combined_availability_pct - a basin may appear in multiple lists, or none.
+    included_records = [r for r in availability_records if not r['excluded']]
+    basin_lists_dir = os.path.dirname(config['train_basin_file'])
+    bs.create_basin_splits(included_records, basin_lists_dir, config['min_combined_availability_pct'])
+
+    # Pass 2: screen out "dry" hydrological years (flagged as used-but-flow-free
+    # by flow_quality_check's availability-threshold logic) directly from the
+    # processed timeseries just written - in place, before normalization.
+    fqc.run_quality_check(
+        config,
+        input_dir=output_dir,
+        output_path=config['flow_quality_check_output_file'],
+        count_suffix='hours',
+        include_missing_index_pct=True,
+    )
+    sdy.screen_years(
+        config,
+        input_dir=output_dir,
+        output_dir=output_dir,
+        quality_check_path=config['flow_quality_check_output_file'],
+        summary_path=config['dry_years_screening_summary_file'],
+    )
+
+    # Pass 2b: screen out days flagged as missing/NaN in the raw
+    # water-authority daily record (nan_flow_days.py), same in-place pattern.
+    # Basins outside the train+val+test union have no nan_flow_days file and
+    # pass through unfiltered.
+    nfd.screen_nan_flow_days(
+        input_dir=output_dir,
+        output_dir=output_dir,
+        nan_flow_days_dir=config['nan_flow_days_output_dir'],
+    )
+
+    # Pass 3: now that every excluded row (long NaN stretches, dry years,
+    # nan_flow_days) is gone, recompute normalization from what actually
+    # remains and bake it in - same formulas as before, just run against the
+    # fully-screened data instead of the pre-screening data.
+    train_bounds = [(p.get('start_date'), p['end_date']) for p in config['train_periods']]
+    rain_feature_names = ['hourly_precipitation'] + [w['name'] for w in config['cumulative_rain_windows']]
+    records_by_basin = {r['gauge_id']: r for r in included_records}
+
+    for basin_id in tqdm(records_by_basin, desc="Pass 3: Normalizing", unit="basin"):
+        file_path = os.path.join(output_dir, f"{basin_id}.csv")
+        clean_df = pd.read_csv(file_path, index_col='date', parse_dates=True)
+
+        train_slice = pd.concat([clean_df.loc[start:end] for start, end in train_bounds])
         flow_mean = float(np.nanmean(train_slice['Flow_m3_sec'].values))
         flow_std = float(np.nanstd(train_slice['Flow_m3_sec'].values))
         if not np.isfinite(flow_std) or flow_std == 0.0:
             flow_mean = float(np.nanmean(clean_df['Flow_m3_sec'].values))
             flow_std = float(np.nanstd(clean_df['Flow_m3_sec'].values))
 
-        # Compute per-basin mean/std for hourly_precipitation and every configured
-        # cumulative-rain feature, each from the same training-period slice. Unlike flow,
-        # these features have no downstream use for raw values, so the z-score is baked
-        # directly into the saved series below rather than applied on-the-fly in dataset.py.
-        rain_feature_names = ['hourly_precipitation'] + [w['name'] for w in config['cumulative_rain_windows']]
         rain_norm_stats = {}
         for feature_name in rain_feature_names:
             feature_mean = float(np.nanmean(train_slice[feature_name].values))
@@ -227,28 +407,20 @@ def process_dynamic_data(config):
                 feature_mean = float(np.nanmean(clean_df[feature_name].values))
                 feature_std = float(np.nanstd(clean_df[feature_name].values))
 
-            # Bake the normalization into the series that gets saved to disk
             clean_df[feature_name] = (clean_df[feature_name] - feature_mean) / feature_std
 
             rain_norm_stats[f'{feature_name}_mean'] = feature_mean
             rain_norm_stats[f'{feature_name}_std'] = feature_std
 
-        # Record data for the summary report
-        availability_records.append({
-            'gauge_id': file_name.replace('.csv', ''),
-            'availability_pct': flow_available,
-            'flow_mean': flow_mean,
-            'flow_std': flow_std,
-            **rain_norm_stats,
-        })
+        clean_df.to_csv(file_path, index_label='date')
 
-        # Save the processed CSV file
-        output_path = os.path.join(output_dir, file_name)
-        clean_df.to_csv(output_path, index_label='date')
+        record = records_by_basin[basin_id]
+        record['flow_mean'] = flow_mean
+        record['flow_std'] = flow_std
+        record.update(rain_norm_stats)
 
-        tqdm.write(f"Done {file_name}: Processed from {basin_start_date} to {END_DATE}. {flow_available:.2f}% flow data. Dropped {n_dropped} rows (long NaN stretches).")
-
-    # Create and save the final availability report
+    # Final availability report, now with flow/rain normalization stats
+    # computed from the fully-screened data.
     report_df = pd.DataFrame(availability_records)
     report_df.to_csv(report_path, index=False)
     print(f"\nSummary report saved to: {report_path}")

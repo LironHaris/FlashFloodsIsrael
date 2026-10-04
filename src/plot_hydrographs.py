@@ -6,6 +6,7 @@ Description: Static Visualization Engine for Multi-Horizon EA-LSTM Flood Forecas
              for targeted storm event inspection.
 """
 
+import argparse
 import os
 import yaml
 import pandas as pd
@@ -13,10 +14,24 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 
+try:
+    import wandb
+    WANDB_AVAILABLE = True
+except ImportError:
+    WANDB_AVAILABLE = False
+
+import find_flood_events as ffe
+
 
 LEAD_COLORS = {0: '#2b8cbe', 1: '#8856a7', 2: '#cb181d', 3: '#86592d', 6: '#cb181d', 12: '#86592d', 24: '#f16913'}
 LEAD_STYLES = {0: '-',       1: '--',      2: '--',      3: ':',       6: '--',      12: ':',      24: ':'}
-THRESHOLD_COLORS = {2: '#bae4b3', 5: '#74c476', 10: '#ef3b2c', 20: '#990000', 30: '#67000d'}
+# Keyed by threshold label (find_flood_events.threshold_label, e.g. '2yr',
+# 'sq0.1') for an exact match, falling back to the threshold TYPE
+# ('return_period'/'specific_discharge') for any label without its own entry.
+THRESHOLD_COLORS = {
+    '2yr': '#238b45', '5yr': '#238b45', '10yr': '#ef3b2c', '20yr': '#990000', '30yr': '#67000d',
+    'return_period': '#238b45', 'specific_discharge': '#08519c',
+}
 
 
 def load_config(yaml_path):
@@ -39,18 +54,101 @@ def _save_figure(fig, exp_dir, filename):
     return out_path
 
 
-def _build_hydrograph_figure(plot_df, title, config, rp_filter=None, hourly_xticks=False):
+def _safe_xlim(start, end):
+    """
+    Widens a (start, end) x-axis bound when they're equal (a single-timestamp
+    window - e.g. a one-hour exceedance event with no buffer padding).
+    matplotlib's set_xlim falls back to expanding identical low/high values by
+    ~0.1% of their absolute numeric value when they're equal; for date-ordinal
+    floats that magnitude is years, not hours, which is what produced the
+    Locator.MAXTICKS blowup this guards against. A fixed +/-30min margin keeps
+    a degenerate single-point window visually sane instead.
+    """
+    if start == end:
+        return start - pd.Timedelta(minutes=30), end + pd.Timedelta(minutes=30)
+    return start, end
+
+
+def load_basin_rain_series(basin, config):
+    """
+    De-normalized (physical mm/h) hourly rain series for a basin, for use as
+    a hydrograph rain overlay. hourly_precipitation in the processed
+    timeseries is z-score normalized (baked in by preprocess_dynamic_data.py),
+    so this reverses that using the basin's own mean/std already recorded in
+    the availability report: rain_mm = normalized * std + mean.
+    Returns a DataFrame with ['timestamp', 'rain_mm'], or None if the basin
+    has no processed file / no availability record.
+    """
+    processed_path = os.path.join(config['processed_timeseries_dir'], f'{basin}.csv')
+    if not os.path.exists(processed_path):
+        return None
+
+    df = pd.read_csv(processed_path, usecols=['date', 'hourly_precipitation'])
+    df['timestamp'] = pd.to_datetime(df['date'])
+
+    availability_df = pd.read_csv(config['availability_report_file']).set_index('gauge_id')
+    if basin not in availability_df.index:
+        return None
+    mean = availability_df.loc[basin, 'hourly_precipitation_mean']
+    std = availability_df.loc[basin, 'hourly_precipitation_std']
+
+    df['rain_mm'] = df['hourly_precipitation'] * std + mean
+    return df[['timestamp', 'rain_mm']]
+
+
+def add_rain_overlay(ax, timestamps, rain_values):
+    """
+    Draws an hourly rain-intensity hyetograph on an inverted secondary y-axis
+    (0 at top, bars hanging downward) - standard combined hydrograph/hyetograph
+    layout. Bars are scaled to occupy roughly the top quarter of the axis so
+    the discharge line underneath stays clearly readable. Returns the twin
+    axis so callers can merge its legend handles with the primary axis's.
+    """
+    ax2 = ax.twinx()
+    bar_width = 1 / 24  # 1 hour, in matplotlib date units (days)
+    ax2.bar(timestamps, rain_values, width=bar_width, color='#f4a460',
+             alpha=0.7, label='Rain (basin mean)', align='center')
+
+    max_rain = np.nanmax(rain_values) if len(rain_values) else 0
+    top_limit = max(max_rain * 4, 1.0) if np.isfinite(max_rain) else 1.0
+    ax2.set_ylim(top_limit, 0)
+    ax2.set_ylabel('Rain intensity (mm/h)', fontsize=10.5, labelpad=8)
+    return ax2
+
+
+def _build_hydrograph_figure(plot_df, title, config, hourly_xticks=False, xlim=None):
     """
     Shared Matplotlib figure builder for hydrograph functions.
     Fixed-size canvas (12 x 6.5 in @ 150 dpi).
-    rp_filter: if set (int), only draw that return period's threshold line.
+    Threshold bars drawn are exactly config['shown_threshold_bars'] (falling
+    back to return_periods_years if unset, matching pre-existing behavior for
+    configs that don't set the new key) - see find_flood_events.normalize_threshold_specs.
     hourly_xticks: if True, format the time axis with hourly ticks (storm windows).
+    xlim: optional (start, end) timestamps to fix the x-axis to explicitly.
+    Without this, matplotlib autoscales the x-axis from the plotted data - which
+    collapses to a degenerate (0, 1) numeric range when a window contains a
+    single unique timestamp (e.g. a one-hour exceedance event with little/no
+    buffer padding). hourly_xticks then tries to place ticks every 2 hours
+    across that bogus range, blowing past Locator.MAXTICKS and rendering as a
+    dense tick/gridline smear instead of a hydrograph. Passing the caller's own
+    known window bounds sidesteps this regardless of how many rows fall inside.
+    X-axis is target time (the real-world moment each value pertains to), not
+    forecast-issuance time: a +{lead}h line's value at row timestamp t is a
+    prediction FOR t+lead, so it's plotted at x=t+lead - matching the
+    convention used by model_compare_test.py:plot_hydrograph_comparison, so
+    every lead's line lands on the same real-world moment it actually
+    predicts rather than the moment the forecast was made.
     """
     active_leads = config.get('forecast_lead_times', [0, 1, 2, 3])
-    rp_years = [rp_filter] if rp_filter is not None else config.get('return_periods_years', [2, 5, 10])
+    shown_specs = ffe.normalize_threshold_specs(
+        config.get('shown_threshold_bars', config.get('return_periods_years', [2, 5, 10]))
+    )
 
     fig, ax = plt.subplots(figsize=(12, 6.5), dpi=150, facecolor="#fafafa")
     ax.set_facecolor("#ffffff")
+
+    if xlim is not None:
+        ax.set_xlim(*_safe_xlim(*xlim))
 
     ax.plot(plot_df['timestamp'], plot_df['actual_flow'],
             color='#1e1e1e', linewidth=2.0, label='Actual Streamflow')
@@ -58,44 +156,40 @@ def _build_hydrograph_figure(plot_df, title, config, rp_filter=None, hourly_xtic
     for lead in active_leads:
         col = f"pred_lead_{lead}h"
         if col in plot_df.columns:
-            ax.plot(plot_df['timestamp'], plot_df[col],
+            target_times = plot_df['timestamp'] + pd.Timedelta(hours=lead)
+            ax.plot(target_times, plot_df[col],
                     color=LEAD_COLORS.get(lead, '#7f7f7f'),
                     linestyle=LEAD_STYLES.get(lead, '-'),
                     linewidth=1.4, alpha=0.85, label=f'+{lead}h Lead')
 
-    # Threshold lines + compact hit-rate summary (longest lead = most warning value)
-    longest_lead = max(active_leads) if active_leads else None
-    hit_rate_lines = []
-    for rp in rp_years:
-        thresh_col = f"threshold_{rp}yr_rp"
+    # Threshold lines
+    for spec in shown_specs:
+        label = ffe.threshold_label(spec)
+        thresh_col = ffe.threshold_column_name(spec)
         if thresh_col in plot_df.columns:
             thresh_val = float(plot_df[thresh_col].iloc[0])
             if thresh_val > 0:
-                ax.axhline(y=thresh_val, color=THRESHOLD_COLORS.get(rp, '#d9d9d9'),
-                           linestyle='-.', linewidth=1.0, alpha=0.9,
-                           label=f'{rp}yr RP ({thresh_val:.1f} m³/s)')
-
-                count_col = f"hit_rate_pred_lead_{longest_lead}h_{rp}yr_count"
-                score_col = f"hit_rate_pred_lead_{longest_lead}h_{rp}yr_score"
-                if count_col in plot_df.columns:
-                    cnt_str = plot_df[count_col].iloc[0]
-                    score = float(plot_df[score_col].iloc[0]) * 100
-                    hit_rate_lines.append(f"{rp}yr RP (+{longest_lead}h): {cnt_str} ({score:.1f}%)")
-
-    if hit_rate_lines:
-        box_text = "Hit Rates:\n" + "\n".join(hit_rate_lines)
-        ax.text(0.02, 0.97, box_text, transform=ax.transAxes, fontsize=8.5,
-                verticalalignment='top', fontfamily='monospace', color='#2c3e50',
-                bbox=dict(boxstyle='round,pad=0.4', facecolor='#f8f9fa', edgecolor='#dddddd', alpha=0.9))
+                color = THRESHOLD_COLORS.get(label, THRESHOLD_COLORS.get(spec['type'], '#d9d9d9'))
+                ax.axhline(y=thresh_val, color=color,
+                           linestyle='-.', linewidth=2.2, alpha=1.0,
+                           label=f'{label} ({thresh_val:.1f} m³/s)')
 
     ax.set_title(title, fontsize=12, fontweight='bold', pad=15, color='#2c3e50')
     ax.set_xlabel('Time', fontsize=10.5, labelpad=8)
     ax.set_ylabel('Discharge (m³/s)', fontsize=10.5, labelpad=8)
     ax.grid(True, linestyle=':', alpha=0.5, color='#b0b0b0')
-    ax.legend(loc='upper right', frameon=True, facecolor='#ffffff', edgecolor='#e2e2e2', fontsize=9)
+
+    if 'rain_mm' in plot_df.columns:
+        ax2 = add_rain_overlay(ax, plot_df['timestamp'], plot_df['rain_mm'])
+        handles1, labels1 = ax.get_legend_handles_labels()
+        handles2, labels2 = ax2.get_legend_handles_labels()
+        ax.legend(handles1 + handles2, labels1 + labels2, loc='upper right',
+                  frameon=True, facecolor='#ffffff', edgecolor='#e2e2e2', fontsize=9)
+    else:
+        ax.legend(loc='upper right', frameon=True, facecolor='#ffffff', edgecolor='#e2e2e2', fontsize=9)
 
     if hourly_xticks:
-        ax.xaxis.set_major_locator(mdates.HourLocator(interval=6))
+        ax.xaxis.set_major_locator(mdates.HourLocator(interval=2))
         ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %Hh'))
         plt.setp(ax.get_xticklabels(), rotation=45, ha='right')
 
@@ -103,11 +197,22 @@ def _build_hydrograph_figure(plot_df, title, config, rp_filter=None, hourly_xtic
     return fig
 
 
-def plot_basin_storm_event(basin_id, start_window, end_window, config):
+def plot_basin_storm_event(basin_id, start_window, end_window, config, label=None, event_idx=None,
+                            output_experiment_name=None):
     """
     Fixed-size hydrograph for a targeted storm event window, with an hourly time axis.
     Loads the basin's visual_report CSV, applies visual_buffer_days padding,
     saves a PNG, and returns the figure. Returns None if data is missing or empty.
+    label/event_idx: when both are given (e.g. 'TP'/'FN'/'FP' from
+    compare_flood_events.py), they set the filename and a title suffix so
+    real/predicted/matched events are distinguishable at a glance.
+    output_experiment_name: when given, the PNG is saved under
+    run_dir/output_experiment_name/ instead of alongside the report - lets a
+    caller read an existing experiment's report without writing into that
+    experiment's folder (e.g. plot_hydrographs.py's standalone --config-driven
+    entry point pointing at a report from a different run). Every other
+    caller (test.py, quick_test.py, model_compare_test.py) omits this, so the
+    figure saves alongside the report exactly as before.
     """
     exp_dir = _get_exp_dir(config)
     report_path = os.path.join(exp_dir, "visualization_reports", f"visual_report_basin_{basin_id}.csv")
@@ -132,11 +237,18 @@ def plot_basin_storm_event(basin_id, start_window, end_window, config):
         print(f"[ERROR] No data in window for basin {basin_id}.")
         return None
 
-    title = (f"Basin {basin_id} — Storm Event\n"
+    title = (f"Basin {basin_id} — Storm Event" + (f" [{label}]" if label else "") + "\n"
              f"Core: {core_start.strftime('%Y-%m-%d %H:%M')} → {core_end.strftime('%Y-%m-%d %H:%M')}")
 
-    fig = _build_hydrograph_figure(plot_df, title, config, hourly_xticks=True)
-    _save_figure(fig, exp_dir, f"hydrograph_basin_{basin_id}_storm.png")
+    fig = _build_hydrograph_figure(plot_df, title, config, hourly_xticks=True,
+                                    xlim=(padded_start, padded_end))
+    if event_idx is not None and label is not None:
+        filename = f"hydrograph_{basin_id}_event{event_idx}_{label}.png"
+    else:
+        filename = f"hydrograph_basin_{basin_id}_storm.png"
+    save_dir = (os.path.join(config.get('run_dir', './runs/'), output_experiment_name)
+                if output_experiment_name else exp_dir)
+    _save_figure(fig, save_dir, filename)
     return fig
 
 
@@ -187,8 +299,24 @@ def plot_nse_cdf(lead, nse_values, config):
     return fig
 
 
-def main():
-    config = load_config("configs/config.yml")
+def main(config_path="configs/config.yml", experiment_name_override=None, output_experiment_name=None):
+    config = load_config(config_path)
+    if experiment_name_override:
+        # In-memory only, same trick model_compare_events_by_year.py/plot_events_by_year.py
+        # themselves use to evaluate under a distinct experiment_name - lets this target a
+        # report produced by one of those (runs/{experiment_name}_custom_period[_{years_tag}]/
+        # visualization_reports/...) instead of test.py's plain runs/{experiment_name}/...
+        # location, without editing the config file. Safe because plot_basin_storm_event
+        # never loads model weights (those come from config['checkpoint_path'], untouched
+        # here) - experiment_name only selects which folder to read the report from.
+        config['experiment_name'] = experiment_name_override
+
+    # Independent output location: defaults to the (possibly overridden) read-side
+    # experiment_name above, so a plain standalone run - or --experiment-name alone -
+    # still saves alongside the report exactly as before. --output-experiment-name lets
+    # the PNG/wandb run land somewhere else entirely, so reading someone else's existing
+    # report never writes into that report's own experiment folder.
+    output_experiment_name = output_experiment_name or config['experiment_name']
 
     print("=" * 75)
     print("      Hydrograph Generation & Visualization Engine — Storm Event Slice")
@@ -204,16 +332,59 @@ def main():
     print(f"[INFO] Visual padding: {config.get('visual_buffer_days', 4)} days")
     print("-" * 75)
 
-    fig = plot_basin_storm_event(basin_id, start_window, end_window, config)
+    # Standalone-only wandb wiring: when plot_basin_storm_event is instead called
+    # by test.py/quick_test.py/model_compare_test.py, THEY own the wandb
+    # login/init/log/finish lifecycle around it - adding it here too would just
+    # double-log, so this block only ever runs from this script's own __main__.
+    use_wandb = config.get('use_wandb', False) and WANDB_AVAILABLE
+    if use_wandb:
+        api_key = config.get('wandb_api_key')
+        if api_key:
+            wandb.login(key=api_key)
+        wandb.init(
+            project=config.get('wandb_project', 'flash-floods-israel'),
+            name=output_experiment_name,
+        )
+
+    fig = plot_basin_storm_event(basin_id, start_window, end_window, config,
+                                  output_experiment_name=output_experiment_name)
 
     if fig is not None:
-        out_path = os.path.join(_get_exp_dir(config), "hydrograph_plots", f"hydrograph_basin_{basin_id}_storm.png")
+        out_path = os.path.join(config.get('run_dir', './runs/'), output_experiment_name,
+                                 "hydrograph_plots", f"hydrograph_basin_{basin_id}_storm.png")
+
+        if use_wandb:
+            wandb.log({f"plot_hydrographs/{basin_id}": wandb.Image(fig)})
         plt.close(fig)
 
         print("\n" + "=" * 75)
         print(f"[✓] Hydrograph saved to: {out_path}")
         print("=" * 75)
 
+    if use_wandb:
+        wandb.finish()
+
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(
+        description="Render one storm-event hydrograph for the basin/window configured in "
+                     "config['plot_hydrographs'], for targeted standalone inspection outside "
+                     "test.py's full evaluation pipeline. Requires that config's test.py run to "
+                     "have already produced visual_report_basin_<id>.csv.")
+    parser.add_argument("--config", type=str, default="configs/config.yml",
+                         help="Path to the YAML config file for this run.")
+    parser.add_argument("--experiment-name", type=str, default=None,
+                         help="Override config['experiment_name'] for locating the report to read "
+                              "(and, unless --output-experiment-name is also given, for saving the "
+                              "PNG too), without editing the config file - e.g. "
+                              "'<experiment_name>_custom_period[_<years_tag>]' to target a report "
+                              "produced by model_compare_events_by_year.py/plot_events_by_year.py "
+                              "instead of test.py's plain experiment folder.")
+    parser.add_argument("--output-experiment-name", type=str, default=None,
+                         help="Save the PNG (and name the wandb run) under this experiment name "
+                              "instead of the (possibly --experiment-name-overridden) read location "
+                              "- so reading an existing experiment's report never writes into that "
+                              "experiment's own folder. Defaults to the read-side experiment name.")
+    args = parser.parse_args()
+    main(args.config, experiment_name_override=args.experiment_name,
+         output_experiment_name=args.output_experiment_name)

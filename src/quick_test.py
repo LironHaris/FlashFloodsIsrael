@@ -7,6 +7,7 @@ Description: Lightweight Evaluation Pipeline for an arbitrary checkpoint.
              full-test-period hydrographs.
 """
 
+import argparse
 import os
 import yaml
 import torch
@@ -25,6 +26,9 @@ from dataset import IsraelBasinsDataset
 from test import evaluate_basin_sequences, build_and_export_report
 import plot_hydrographs as ph
 import find_flood_events as ffe
+import find_predicted_flood_events as pfe
+import compare_flood_events as cfe
+import peaks_analyze as pa
 
 
 def load_config(yaml_path):
@@ -37,10 +41,12 @@ def setup_evaluation_from_checkpoint(config):
     """
     Handles model reconstruction and loads weights from config['checkpoint_path'],
     instead of test.py's fixed run_dir/experiment_name/best_model.pt location.
-    Inference is forced on CPU to maintain simplicity and memory stability.
+    Uses config['device'] (falling back to CPU if CUDA isn't available), same
+    convention as train.py.
     """
-    device = torch.device('cpu')
-    print(f"[INFO] Evaluation environment locked on hardware target: {device}")
+    device_str = config.get('device', 'cpu')
+    device = torch.device(device_str if torch.cuda.is_available() or device_str == 'cpu' else 'cpu')
+    print(f"[INFO] Evaluation environment targeting hardware: {device}")
 
     print("[INFO] Reconstructing EA-LSTM architecture dynamically...")
     model = EALSTMModel(config).to(device)
@@ -77,14 +83,15 @@ def compute_nse_per_lead(actual_leads_dict, pred_leads_dict, forecast_lead_times
     return nse_per_lead
 
 
-def main():
+def main(config_path="configs/config.yml"):
     # Step 1: Config ingestion and model setup from the configured checkpoint
-    config = load_config("configs/config.yml")
+    config = load_config(config_path)
     model, device, exp_dir = setup_evaluation_from_checkpoint(config)
 
     # Step 2: Initialize sterile test split tracking arrays
     print("[INFO] Constructing test datasets and extracting sequential metadata...")
-    test_dataset = IsraelBasinsDataset(split_type='test', config=config, use_basin_splits=False)
+    test_dataset = IsraelBasinsDataset(split_type='test', config=config,
+                                       use_basin_splits=config.get('use_basin_splits', True))
 
     # Set up dedicated output folder inside run directory (same convention as test.py)
     output_dir = os.path.join(exp_dir, "visualization_reports")
@@ -128,20 +135,49 @@ def main():
             nse_accumulator[lead].append(nse_val)
 
     if use_wandb:
-        # Scan for flood events and plot each one
+        # Scan real + predicted flood events, then compare them at every
+        # configured prediction_threshold to classify each as TP/FP/FN - each
+        # threshold gets its own comparison/peaks files, but a window flagged
+        # by more than one threshold gets exactly one plotted hydrograph (see
+        # ffe.merge_events_across_thresholds).
         print("\n[INFO] Scanning for flood events across all basins...")
         ffe.main(config=config, basin_ids=test_basins)
+        print("\n[INFO] Scanning for predicted flood events across all basins...")
+        pfe.main(config=config, basin_ids=test_basins)
+        print("\n[INFO] Comparing real vs. predicted flood events...")
+        comparison_paths = cfe.main(config=config, basin_ids=test_basins)  # {label: path}
 
-        events_path = config['find_flood_events_output']
-        if os.path.exists(events_path):
-            events_df = pd.read_csv(events_path)
-            for _, event in events_df.iterrows():
-                basin = str(event['basin_id'])
-                fig = ph.plot_basin_storm_event(basin, event['core_start'], event['core_end'], config)
+        print("\n[INFO] Computing peak timing/magnitude analysis...")
+        pa.main(config=config, basin_ids=test_basins)
+
+        prediction_specs = ffe.normalize_threshold_specs(config.get('prediction_threshold', 2))
+        area_map = (ffe.load_basin_area_map(config)
+                    if any(s['type'] == 'specific_discharge' for s in prediction_specs) else None)
+
+        events_by_basin = {}  # {basin_id: {threshold_label: [event dicts]}}
+        for spec in prediction_specs:
+            label = ffe.threshold_label(spec)
+            path = comparison_paths.get(label)
+            if not path or not os.path.exists(path):
+                continue
+            df_cmp = pd.read_csv(path, dtype={'basin_id': str})
+            for basin_id, group in df_cmp.groupby('basin_id'):
+                events_by_basin.setdefault(basin_id, {})[label] = [
+                    {'core_start': pd.to_datetime(r['core_start']), 'core_end': pd.to_datetime(r['core_end']),
+                     'label': r['label'], 'event_idx': int(r['event_idx'])}
+                    for _, r in group.iterrows()
+                ]
+
+        for basin_id, events_by_label in events_by_basin.items():
+            value_by_label = {ffe.threshold_label(spec): ffe.resolve_threshold_value(basin_id, spec, config, area_map)
+                               for spec in prediction_specs}
+            for window in ffe.merge_events_across_thresholds(events_by_label, value_by_label):
+                label = window['label']
+                idx = window['event_idx']
+                fig = ph.plot_basin_storm_event(basin_id, window['core_start'], window['core_end'],
+                                                 config, label=label, event_idx=idx)
                 if fig is not None:
-                    rp = int(event['return_period_years'])
-                    idx = int(event['event_idx'])
-                    key = f"quicktest/flood_events/{basin}/rp{rp}yr_event{idx}"
+                    key = f"quicktest/flood_events/{basin_id}/event{idx}_{label}"
                     wandb.log({key: wandb.Image(fig)})
                     plt.close(fig)
 
@@ -160,4 +196,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Quick-evaluate an arbitrary checkpoint via config['checkpoint_path'].")
+    parser.add_argument("--config", type=str, default="configs/config.yml",
+                         help="Path to the YAML config file matching the run to evaluate.")
+    args = parser.parse_args()
+    main(args.config)

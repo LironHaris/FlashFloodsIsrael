@@ -5,6 +5,7 @@ Description: Evaluation Pipeline for Multi-Horizon EA-LSTM. Loads trained weight
              and exports comprehensive evaluation reports basin-by-basin.
 """
 
+import argparse
 import os
 import yaml
 import torch
@@ -24,6 +25,9 @@ from model import EALSTMModel
 from dataset import IsraelBasinsDataset
 import plot_hydrographs as ph
 import find_flood_events as ffe
+import find_predicted_flood_events as pfe
+import compare_flood_events as cfe
+import peaks_analyze as pa
 
 
 def load_config(yaml_path):
@@ -59,29 +63,6 @@ def setup_evaluation(config):
     return model, device, exp_dir
 
 
-def load_basin_return_periods(basin_id, config):
-    """
-    Loads cross-checked return period thresholds from the combined return-period file
-    (see new_return_periods.py). Maps return period years to their physical streamflow
-    value (m3/sec). Skips RP columns with no usable value (missing row/column, NaN, or
-    a non-positive sentinel like the -2 "no data" marker).
-    """
-    combined_path = config['hourly_flow_return_periods_combined']
-    if not os.path.exists(combined_path):
-        return {}
-
-    combined_df = pd.read_csv(combined_path, dtype={'basin_id': str})
-    row = combined_df[combined_df['basin_id'] == str(basin_id)]
-    if row.empty:
-        return {}
-    row = row.iloc[0]
-
-    thresholds = {}
-    for rp_year in config.get('return_periods_years', [2, 5]):
-        col = f'RP{rp_year}'
-        if col in row.index and pd.notna(row[col]) and row[col] > 0:
-            thresholds[rp_year] = float(row[col])
-    return thresholds
 
 
 def calculate_threshold_metrics(predictions_np, actuals_np, threshold_value):
@@ -139,7 +120,7 @@ def evaluate_basin_sequences(basin, test_dataset, model, device, config):
             # non-negative streamflow (clamp here rather than in the model so training
             # and its gradients remain unconstrained).
             raw_prediction = model(x_dynamic, x_static).squeeze(0) * basin_std + basin_mean
-            prediction = torch.clamp(raw_prediction, min=0).numpy()
+            prediction = torch.clamp(raw_prediction, min=0).cpu().numpy()
 
             # Metadata tracking collection (Outside model execution space)
             timestamps.append(test_dataset.sample_date_mappings[idx])
@@ -161,40 +142,45 @@ def build_and_export_report(basin, output_dir, timestamps, actual_leads_dict, pr
     df = pd.DataFrame({'timestamp': timestamps})
     for col_name, values in actual_leads_dict.items():
         df[col_name] = values
-    # 'actual_flow' alias: observed flow at the model's first (for single-lead models: only) lead time,
-    # used by hydrograph plots and event finding. (Was hardcoded to lead 0, which breaks lead-k-only models.)
-    first_lead = min(config.get('forecast_lead_times', [0]))
-    df['actual_flow'] = df[f'actual_lead_{first_lead}h']
+    # 'actual_flow' alias for the model's primary (first configured) lead -
+    # used by hydrograph plots and threshold metrics
+    primary_lead = config['forecast_lead_times'][0]
+    df['actual_flow'] = df[f'actual_lead_{primary_lead}h']
 
     # Append multi-horizon prediction outputs
     for col_name, values in pred_leads_dict.items():
         df[col_name] = values
 
-    # Ingest historical extreme value return period benchmarks for this basin
-    thresholds = load_basin_return_periods(basin, config)
+    # Ingest historical extreme value / specific-discharge threshold benchmarks
+    # for this basin - the union of every threshold any downstream consumer
+    # (event classification, peaks analysis, hydrograph bars, summary table)
+    # might need (see report_threshold_specs).
     actuals_np = df['actual_flow'].to_numpy()
-    
-    # Inject thresholds and map hit rate statistics dynamically
-    for rp_year in config.get('return_periods_years', [2, 5, 10]):
-        if rp_year in thresholds:
-            thresh_val = thresholds[rp_year]
-            df[f'threshold_{rp_year}yr_rp'] = thresh_val  # Static horizontal bar mapping
-            
-            # Evaluate hit rates across every active prediction horizon
-            for col_name in list(pred_leads_dict.keys()):
-                preds_np = df[col_name].to_numpy()
-                # score each lead against the observed flow at that SAME lead (pred_lead_kh vs actual_lead_kh)
-                actual_col = col_name.replace('pred_', 'actual_')
-                lead_actuals = df[actual_col].to_numpy() if actual_col in df.columns else actuals_np
-                count_str, score, false_alarms = calculate_threshold_metrics(preds_np, lead_actuals, thresh_val)
 
-                # Append metrics directly onto the dataframe structure
-                df[f'hit_rate_{col_name}_{rp_year}yr_count'] = count_str
-                df[f'hit_rate_{col_name}_{rp_year}yr_score'] = score
-                df[f'false_alarms_{col_name}_{rp_year}yr'] = false_alarms
+    for spec in ffe.report_threshold_specs(config):
+        thresh_val = ffe.resolve_threshold_value(basin, spec, config)
+        if thresh_val is None or thresh_val <= 0:
+            continue
+        label = ffe.threshold_label(spec)
+        df[ffe.threshold_column_name(spec)] = thresh_val  # Static horizontal bar mapping
+
+        # Evaluate hit rates across every active prediction horizon
+        for col_name in list(pred_leads_dict.keys()):
+            preds_np = df[col_name].to_numpy()
+            count_str, score, false_alarms = calculate_threshold_metrics(preds_np, actuals_np, thresh_val)
+
+            # Append metrics directly onto the dataframe structure
+            df[f'hit_rate_{col_name}_{label}_count'] = count_str
+            df[f'hit_rate_{col_name}_{label}_score'] = score
+            df[f'false_alarms_{col_name}_{label}'] = false_alarms
+
+    # Attach de-normalized rain (mm/h) for hydrograph rain overlays
+    df['timestamp'] = pd.to_datetime(df['timestamp'])
+    rain_df = ph.load_basin_rain_series(basin, config)
+    if rain_df is not None:
+        df = df.merge(rain_df, on='timestamp', how='left')
 
     # Enforce chronological sorting to ensure clean hydrograph continuity
-    df['timestamp'] = pd.to_datetime(df['timestamp'])
     df = df.sort_values(by='timestamp').reset_index(drop=True)
     
     # Commit report to disk
@@ -212,7 +198,7 @@ def generate_basin_summary_table(basin, df, config, output_dir):
     Saves to CSV and prints to stdout. Returns the summary DataFrame.
     """
     active_leads = config.get('forecast_lead_times', [0, 1, 2, 3])
-    rp_years = config.get('return_periods_years', [2, 5, 10])
+    report_specs = ffe.report_threshold_specs(config)
 
     # NSE per lead time: compare pred_lead_kh against actual_lead_kh (observed flow at t+k)
     nse_per_lead = {}
@@ -228,11 +214,12 @@ def generate_basin_summary_table(basin, df, config, output_dir):
 
     rows = []
     for lead in active_leads:
-        for rp in rp_years:
-            thresh_col = f"threshold_{rp}yr_rp"
-            count_col = f"hit_rate_pred_lead_{lead}h_{rp}yr_count"
-            score_col = f"hit_rate_pred_lead_{lead}h_{rp}yr_score"
-            fa_col = f"false_alarms_pred_lead_{lead}h_{rp}yr"
+        for spec in report_specs:
+            label = ffe.threshold_label(spec)
+            thresh_col = ffe.threshold_column_name(spec)
+            count_col = f"hit_rate_pred_lead_{lead}h_{label}_count"
+            score_col = f"hit_rate_pred_lead_{lead}h_{label}_score"
+            fa_col = f"false_alarms_pred_lead_{lead}h_{label}"
 
             if count_col not in df.columns:
                 continue
@@ -246,7 +233,7 @@ def generate_basin_summary_table(basin, df, config, output_dir):
 
             rows.append({
                 'Lead Time (h)': lead,
-                'Return Period (yr)': rp,
+                'Threshold Label': label,
                 'Threshold (m³/s)': thresh_val,
                 'Flow Exceedances': total_events,
                 'Hits': hits,
@@ -254,12 +241,6 @@ def generate_basin_summary_table(basin, df, config, output_dir):
                 'False Alarms': false_alarms,
                 'NSE': nse_per_lead.get(lead),
             })
-
-    if not rows:
-        # No return-period thresholds available for this basin: still report NSE per lead time.
-        rows = [{'Lead Time (h)': lead, 'Return Period (yr)': None, 'Threshold (m³/s)': None,
-                 'Flow Exceedances': None, 'Hits': None, 'Hit Rate': None, 'False Alarms': None,
-                 'NSE': nse_per_lead.get(lead)} for lead in active_leads]
 
     summary_df = pd.DataFrame(rows)
     csv_path = os.path.join(output_dir, f"summary_table_basin_{basin}.csv")
@@ -270,16 +251,15 @@ def generate_basin_summary_table(basin, df, config, output_dir):
     return summary_df
 
 
-def main():
+def main(config_path="configs/config.yml"):
     # Step 1: Config ingestion and model setup
-    config_path = os.environ.get("FLOODS_CONFIG", "configs/config.yml")
-    print(f"[INFO] Using config: {config_path}")
     config = load_config(config_path)
     model, device, exp_dir = setup_evaluation(config)
 
     # Step 2: Initialize sterile test split tracking arrays
     print("[INFO] Constructing test datasets and extracting sequential metadata...")
-    test_dataset = IsraelBasinsDataset(split_type='test', config=config, use_basin_splits=False)
+    test_dataset = IsraelBasinsDataset(split_type='test', config=config,
+                                       use_basin_splits=config.get('use_basin_splits', True))
 
     # Set up dedicated output folder inside run directory
     output_dir = os.path.join(exp_dir, "visualization_reports")
@@ -370,20 +350,49 @@ def main():
             for col, values in score_accumulator.items():
                 wandb.run.summary[f"test_mean/{col}"] = float(np.mean(values))
 
-        # Scan for flood events and plot each one
+        # Scan real + predicted flood events, then compare them at every
+        # configured prediction_threshold to classify each as TP/FP/FN -
+        # each threshold gets its own comparison/peaks files, but a window
+        # flagged by more than one threshold gets exactly one plotted
+        # hydrograph (see ffe.merge_events_across_thresholds).
         print("\n[INFO] Scanning for flood events across all basins...")
         ffe.main(config=config, basin_ids=test_basins)
+        print("\n[INFO] Scanning for predicted flood events across all basins...")
+        pfe.main(config=config, basin_ids=test_basins)
+        print("\n[INFO] Comparing real vs. predicted flood events...")
+        comparison_paths = cfe.main(config=config, basin_ids=test_basins)  # {label: path}
 
-        events_path = config['find_flood_events_output']
-        if os.path.exists(events_path):
-            events_df = pd.read_csv(events_path)
-            for _, event in events_df.iterrows():
-                basin = str(event['basin_id'])
-                fig = ph.plot_basin_storm_event(basin, event['core_start'], event['core_end'], config)
+        print("\n[INFO] Computing peak timing/magnitude analysis...")
+        pa.main(config=config, basin_ids=test_basins)
+
+        prediction_specs = ffe.normalize_threshold_specs(config.get('prediction_threshold', 2))
+        area_map = (ffe.load_basin_area_map(config)
+                    if any(s['type'] == 'specific_discharge' for s in prediction_specs) else None)
+
+        events_by_basin = {}  # {basin_id: {threshold_label: [event dicts]}}
+        for spec in prediction_specs:
+            label = ffe.threshold_label(spec)
+            path = comparison_paths.get(label)
+            if not path or not os.path.exists(path):
+                continue
+            df_cmp = pd.read_csv(path, dtype={'basin_id': str})
+            for basin_id, group in df_cmp.groupby('basin_id'):
+                events_by_basin.setdefault(basin_id, {})[label] = [
+                    {'core_start': pd.to_datetime(r['core_start']), 'core_end': pd.to_datetime(r['core_end']),
+                     'label': r['label'], 'event_idx': int(r['event_idx'])}
+                    for _, r in group.iterrows()
+                ]
+
+        for basin_id, events_by_label in events_by_basin.items():
+            value_by_label = {ffe.threshold_label(spec): ffe.resolve_threshold_value(basin_id, spec, config, area_map)
+                               for spec in prediction_specs}
+            for window in ffe.merge_events_across_thresholds(events_by_label, value_by_label):
+                label = window['label']
+                idx = window['event_idx']
+                fig = ph.plot_basin_storm_event(basin_id, window['core_start'], window['core_end'],
+                                                 config, label=label, event_idx=idx)
                 if fig is not None:
-                    rp  = int(event['return_period_years'])
-                    idx = int(event['event_idx'])
-                    key = f"test/flood_events/{basin}/rp{rp}yr_event{idx}"
+                    key = f"test/flood_events/{basin_id}/event{idx}_{label}"
                     wandb.log({key: wandb.Image(fig)})
                     plt.close(fig)
 
@@ -402,4 +411,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Evaluate a trained EA-LSTM model.")
+    parser.add_argument("--config", type=str, default="configs/config.yml",
+                         help="Path to the YAML config file matching the run to evaluate.")
+    args = parser.parse_args()
+    main(args.config)

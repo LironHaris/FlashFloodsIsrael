@@ -1,0 +1,38 @@
+#!/bin/bash
+#SBATCH --job-name=ealstm_sweep
+#SBATCH --output=/sci/labs/efratmorin/liron.haris/FlashFloodsIsrael/runs/sweep_%j.out
+#SBATCH --error=/sci/labs/efratmorin/liron.haris/FlashFloodsIsrael/runs/sweep_%j.err
+#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=32G
+#SBATCH --time=24:00:00
+
+# 1. ����� �-Conda �� ������ ������ ������
+source /sci/labs/efratmorin/liron.haris/miniconda3/etc/profile.d/conda.sh
+conda activate flashfloods
+
+# 2. ����� ����� ����� ���� ����� �����
+export HOME=/sci/labs/efratmorin/liron.haris/
+export MPLCONFIGDIR=/sci/labs/efratmorin/liron.haris/.matplotlib_cache
+
+# 3. ���� ������� �������
+cd /sci/labs/efratmorin/liron.haris/FlashFloodsIsrael
+
+# 4. SWEEP_ID is required (from `wandb sweep <sweep_config>`); CONFIG_PATH picks
+# which model's config each trial sweeps; SWEEP_CONFIG_PATH picks which sweep
+# YAML's project/early-drop settings this agent reads locally (must match
+# whichever file SWEEP_ID was actually registered from).
+SWEEP_ID="${1:?Usage: sbatch run_sweep.sh <sweep_id> [config_path] [sweep_config_path]}"
+export FLASHFLOODS_CONFIG="${2:-configs/config.yml}"
+export FLASHFLOODS_SWEEP_CONFIG="${3:-configs/sweep.yaml}"
+
+# 4b. Authenticate via WANDB_API_KEY (env var) instead of ~/.netrc - dozens of
+# these jobs can start within the same second, and concurrent `wandb` CLI
+# processes writing to the same shared-HOME ~/.netrc can corrupt it (seen in
+# practice: null-byte garbage). Reading the key straight out of the config
+# and exporting it means wandb never touches ~/.netrc at all.
+export WANDB_API_KEY="$(python -c "import yaml,sys; print(yaml.safe_load(open(sys.argv[1], encoding='utf-8'))['wandb_api_key'])" "$FLASHFLOODS_CONFIG")"
+
+# 5. ���� �-Agent
+wandb agent liron-haris-hebrew-university-of-jerusalem/flash-floods-israel/$SWEEP_ID
+
