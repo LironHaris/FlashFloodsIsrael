@@ -1,11 +1,11 @@
 #!/bin/bash
-# Radar Model B (1a / 1b) on Moriah: prepare inputs (once) -> train -> test.
+# Radar Model B (SRradar_B_mean_mask = 1a, SRradar_B_allstats_mask = 1b) on Moriah: prepare inputs (once) -> train -> test.
 # Settings follow Liron's cluster/run_train.sh (1 GPU, 4 CPUs, 32G, 24h, conda env `flashfloods`),
 # with all caches and logs under Ariel's lab folder.
 #
 #   cd /sci/labs/efratmorin/ariel.monzon/FlashFloodsIsrael_radar
-#   sbatch --export=ALL,RUN=radar_1a jobs/radar_modelB.sbatch
-#   sbatch --export=ALL,RUN=radar_1b jobs/radar_modelB.sbatch      # after 1a has prepared the inputs
+#   sbatch --export=ALL,RUN=SRradar_B_mean_mask jobs/radar_modelB.sbatch
+#   sbatch --export=ALL,RUN=SRradar_B_allstats_mask jobs/radar_modelB.sbatch      # after 1a has prepared the inputs
 #   (other GPU partition: add  --partition=catfish  before jobs/...)
 
 #SBATCH --job-name=radar_modelB
@@ -17,7 +17,7 @@
 #SBATCH --time=24:00:00
 
 set -eo pipefail
-RUN="${RUN:-radar_1a}"
+RUN="${RUN:-SRradar_B_mean_mask}"
 LAB=/sci/labs/efratmorin/ariel.monzon
 REPO="${SLURM_SUBMIT_DIR:-$LAB/FlashFloodsIsrael_radar}"
 cd "$REPO"

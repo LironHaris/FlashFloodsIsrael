@@ -47,8 +47,8 @@ COMMON = {
 }
 
 RUNS = {
-    "radar_1a": {"dynamic_inputs": ["radar_mean_mm", "radar_mask"]},
-    "radar_1b": {"dynamic_inputs": RADAR_FEATURES + ["radar_mask"]},
+    "SRradar_B_mean_mask": {"dynamic_inputs": ["radar_mean_mm", "radar_mask"]},
+    "SRradar_B_allstats_mask": {"dynamic_inputs": RADAR_FEATURES + ["radar_mask"]},
 }
 
 
@@ -59,7 +59,7 @@ def main():
         cfg = copy.deepcopy(base)
         cfg.update(COMMON)
         cfg.update(extra)
-        cfg["experiment_name"] = f"{name}_modelB"
+        cfg["experiment_name"] = name
         cfg.pop("cumulative_rain_windows", None)   # no weekly total in the radar runs (for now)
         path = os.path.join(HERE, f"{name}.yml")
         with open(path, "w", encoding="utf-8") as f:
