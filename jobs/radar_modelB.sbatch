@@ -30,7 +30,9 @@ export WANDB_CACHE_DIR=$LAB/wandb_cache
 export WANDB_CONFIG_DIR=$LAB/.config/wandb
 export WANDB_DIR=$LAB/SR_radar/wandb
 mkdir -p "$MPLCONFIGDIR" "$WANDB_CACHE_DIR" "$WANDB_CONFIG_DIR" "$WANDB_DIR" "$LAB/SR_radar/logs"
-# W&B login: run `wandb login` once (with the same WANDB_CONFIG_DIR exported) or set WANDB_API_KEY.
+# W&B login: compute nodes may not see the home folder (/cs/usr/...), so keep the credentials in the lab
+# folder:  cp ~/.netrc /sci/labs/efratmorin/ariel.monzon/.netrc && chmod 600 /sci/labs/efratmorin/ariel.monzon/.netrc
+if [ -f "$LAB/.netrc" ]; then export NETRC="$LAB/.netrc"; fi
 
 export FLOODS_CONFIG="configs/${RUN}.yml"
 echo "[job] run=${RUN} config=${FLOODS_CONFIG} host=$(hostname) start=$(date)"
