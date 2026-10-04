@@ -161,8 +161,10 @@ def build_and_export_report(basin, output_dir, timestamps, actual_leads_dict, pr
     df = pd.DataFrame({'timestamp': timestamps})
     for col_name, values in actual_leads_dict.items():
         df[col_name] = values
-    # 'actual_flow' alias for lead-0: used by hydrograph plots and threshold metrics
-    df['actual_flow'] = df['actual_lead_0h']
+    # 'actual_flow' alias: observed flow at the model's first (for single-lead models: only) lead time,
+    # used by hydrograph plots and event finding. (Was hardcoded to lead 0, which breaks lead-k-only models.)
+    first_lead = min(config.get('forecast_lead_times', [0]))
+    df['actual_flow'] = df[f'actual_lead_{first_lead}h']
 
     # Append multi-horizon prediction outputs
     for col_name, values in pred_leads_dict.items():
@@ -181,7 +183,10 @@ def build_and_export_report(basin, output_dir, timestamps, actual_leads_dict, pr
             # Evaluate hit rates across every active prediction horizon
             for col_name in list(pred_leads_dict.keys()):
                 preds_np = df[col_name].to_numpy()
-                count_str, score, false_alarms = calculate_threshold_metrics(preds_np, actuals_np, thresh_val)
+                # score each lead against the observed flow at that SAME lead (pred_lead_kh vs actual_lead_kh)
+                actual_col = col_name.replace('pred_', 'actual_')
+                lead_actuals = df[actual_col].to_numpy() if actual_col in df.columns else actuals_np
+                count_str, score, false_alarms = calculate_threshold_metrics(preds_np, lead_actuals, thresh_val)
 
                 # Append metrics directly onto the dataframe structure
                 df[f'hit_rate_{col_name}_{rp_year}yr_count'] = count_str

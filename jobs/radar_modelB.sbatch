@@ -44,7 +44,9 @@ if [ "$(ls "$INPUTS_DIR"/*.csv 2>/dev/null | wc -l)" -lt 1 ]; then
   echo "[job] ERROR: no prepared inputs in ${INPUTS_DIR} - run jobs/radar_prepare.sbatch first"; exit 1
 fi
 
-# train, then test
-python src/train.py
+# train, then test   (TEST_ONLY=1 re-runs only the test on the saved best_model.pt)
+if [ "${TEST_ONLY:-0}" != "1" ]; then
+  python src/train.py
+fi
 python src/test.py
 echo "[job] done $(date)"
