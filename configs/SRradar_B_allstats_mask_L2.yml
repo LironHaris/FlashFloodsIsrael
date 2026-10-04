@@ -90,7 +90,7 @@ raw_static_dir: ./data/raw/static
 static_attributes_file: data/processed/static/static_attributes_nh.csv
 processed_static_dir: ./data/processed/static
 feature_stats_file: ./data/processed/static/feature_statistics.csv
-normalized_static_attributes_file: /sci/labs/efratmorin/liron.haris/FlashFloodsIsrael/data/processed/static/static_attributes_normalized.csv
+normalized_static_attributes_file: /sci/labs/efratmorin/ariel.monzon/SR_radar/static/static_attributes_normalized_plus4.csv
 raw_dynamic_dir: ./data/raw/dynamic
 processed_timeseries_dir: /sci/labs/efratmorin/ariel.monzon/SR_radar/IMS_SR_adjusted_basin_hourly_v1/model_inputs_v1/timeseries
 availability_report_file: /sci/labs/efratmorin/ariel.monzon/SR_radar/IMS_SR_adjusted_basin_hourly_v1/model_inputs_v1/availability_report.csv
@@ -247,6 +247,14 @@ radar_features:
 - radar_p90_mm
 - radar_wet_frac
 - radar_std_mm
+static_source_dir: /sci/labs/efratmorin/liron.haris/FlashFloodsIsrael/data/processed/static
+static_extend_basins:
+- il_14115
+- il_17110
+- il_17117
+- il_18131
+exclude_basins:
+- il_17123
 gap_max_run: 2
 gap_max_total: 6
 sample_filter_column: window_ok

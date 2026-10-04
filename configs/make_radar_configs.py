@@ -21,8 +21,13 @@ COMMON = {
     "processed_timeseries_dir": f"{INPUTS}/timeseries",
     "availability_report_file": f"{INPUTS}/availability_report.csv",
     "radar_features": RADAR_FEATURES,
-    # static attributes: Liron's normalized file (same statics as the gauge baseline)
-    "normalized_static_attributes_file": f"{SCI}/liron.haris/FlashFloodsIsrael/data/processed/static/static_attributes_normalized.csv",
+    # static attributes: Liron's normalized file + basins missing from it, normalized with her constants
+    # (built once by src/extend_static_attributes.py; evidence in RADAR_INTEGRATION_REPORT.md)
+    "static_source_dir": f"{SCI}/liron.haris/FlashFloodsIsrael/data/processed/static",
+    "static_extend_basins": ["il_14115", "il_17110", "il_17117", "il_18131"],
+    "normalized_static_attributes_file": f"{RADAR}/static/static_attributes_normalized_plus4.csv",
+    # flow-QC exclusion: il_17123 - 2013-01-08 official peak 99 m3/s but hourly series 0.0; max 0.42 m3/s 2012-23
+    "exclude_basins": ["il_17123"],
     # flood thresholds used by test.py (hit rates / events): Liron's combined return-period file
     "hourly_flow_return_periods_combined": f"{SCI}/liron.haris/FlashFloodsIsrael/data/processed/return_periods/new_return_periods.csv",
     "use_basin_splits": False,

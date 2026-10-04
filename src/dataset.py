@@ -180,7 +180,9 @@ def _load_basin_ids(basin_list_file, config, use_basin_splits, split_type='train
     # If temporal split is selected, skip files and load every single basin dynamically
     if not use_basin_splits:
         dyn_dir = config['processed_timeseries_dir']
-        all_basins = [f.replace('.csv', '') for f in os.listdir(dyn_dir) if f.endswith('.csv')]
+        excluded = set(config.get('exclude_basins') or [])
+        all_basins = [f.replace('.csv', '') for f in os.listdir(dyn_dir)
+                      if f.endswith('.csv') and f.replace('.csv', '') not in excluded]
         if split_type == 'train':
             print(f"[Info] Spatial splits disabled. Automatically loaded all {len(all_basins)} basins for temporal split.")
         return all_basins

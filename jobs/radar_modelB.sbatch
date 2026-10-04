@@ -36,14 +36,13 @@ export FLOODS_CONFIG="configs/${RUN}.yml"
 echo "[job] run=${RUN} config=${FLOODS_CONFIG} host=$(hostname) start=$(date)"
 echo "[job] python=$(which python)"; nvidia-smi || true
 
-# 1) model-ready inputs (shared by 1a and 1b; skipped if already prepared)
+# inputs and statics are built once by jobs/radar_prepare.sbatch (submit it first; see its header)
 INPUTS_DIR=$(python -c "import yaml,os;print(yaml.safe_load(open(os.environ['FLOODS_CONFIG']))['processed_timeseries_dir'])")
-if [ "$(ls "$INPUTS_DIR"/*.csv 2>/dev/null | wc -l)" -lt 53 ]; then
-  echo "[job] preparing radar inputs -> ${INPUTS_DIR}"
-  python src/prepare_radar_inputs.py
+if [ "$(ls "$INPUTS_DIR"/*.csv 2>/dev/null | wc -l)" -lt 1 ]; then
+  echo "[job] ERROR: no prepared inputs in ${INPUTS_DIR} - run jobs/radar_prepare.sbatch first"; exit 1
 fi
 
-# 2) train, 3) test
+# train, then test
 python src/train.py
 python src/test.py
 echo "[job] done $(date)"

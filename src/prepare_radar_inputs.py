@@ -99,7 +99,8 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
     os.makedirs(os.path.dirname(config['availability_report_file']) or '.', exist_ok=True)
 
-    basins = a.basins or sorted(f[:-4] for f in os.listdir(src_dir) if f.endswith('.csv'))
+    excluded = set(config.get('exclude_basins') or [])
+    basins = a.basins or sorted(f[:-4] for f in os.listdir(src_dir) if f.endswith('.csv') and f[:-4] not in excluded)
     records = []
     for i, b in enumerate(basins, 1):
         out, report = prepare_basin(os.path.join(src_dir, f'{b}.csv'), config)
