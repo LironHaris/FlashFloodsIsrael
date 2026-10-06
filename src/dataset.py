@@ -127,13 +127,20 @@ class IsraelBasinsDataset(Dataset):
     """
     Wrapper dataset that concatenates multiple individual SingleBasinDatasets 
     and extracts global tracking arrays for sequential basin-by-basin testing.
+
+    Optional overrides: basin_ids replaces the split's basin list file, and
+    periods ([(start_date, end_date), ...]) replaces the split's time bounds.
+    split_type still selects the NaN tolerance (train vs. eval).
     """
-    def __init__(self, split_type, config, use_basin_splits=True):
+    def __init__(self, split_type, config, use_basin_splits=True, basin_ids=None, periods=None):
         # Step 1: Extract paths, time bounds, and shuffling rules
-        basin_list_file, periods, _ = _get_split_bounds_and_config(split_type, config, use_basin_splits)
+        basin_list_file, split_periods, _ = _get_split_bounds_and_config(split_type, config, use_basin_splits)
+        if periods is None:
+            periods = split_periods
 
         # Step 2: Load the target basin IDs
-        basin_ids = _load_basin_ids(basin_list_file, config, use_basin_splits, split_type)
+        if basin_ids is None:
+            basin_ids = _load_basin_ids(basin_list_file, config, use_basin_splits, split_type)
 
         # Step 3: Construct dataset objects for each individual basin
         self.basin_datasets = _build_basin_datasets(basin_ids, config, periods, split_type)

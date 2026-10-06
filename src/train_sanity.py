@@ -111,7 +111,7 @@ def to_value_and_pct(sq_err_sum_dict, total_elements):
     return values, pcts
 
 
-def plot_breakdown_pie(value_pct_dict, title, output_path, top_n=None):
+def plot_breakdown_pie(value_pct_dict, title, output_path, top_n=None, group_label='basins'):
     """
     Pie chart of {group: (value, percentage)}. top_n=None (years): one slice
     per group. top_n=N (basins): keep the top N by value, fold the rest into
@@ -128,9 +128,9 @@ def plot_breakdown_pie(value_pct_dict, title, output_path, top_n=None):
         rest_items = items[top_n:]
         rest_value = sum(v for _, (v, _) in rest_items)
         rest_pct = sum(p for _, (_, p) in rest_items)
-        plot_items = top_items + [(f'Other ({len(rest_items)} basins)', (rest_value, rest_pct))]
+        plot_items = top_items + [(f'Other ({len(rest_items)} {group_label})', (rest_value, rest_pct))]
         top_pct_sum = sum(p for _, (_, p) in top_items)
-        annotation = f'Top {top_n} basins = {top_pct_sum / 100:.2f} of total loss'
+        annotation = f'Top {top_n} {group_label} = {top_pct_sum / 100:.2f} of total loss'
     else:
         plot_items = items
 
