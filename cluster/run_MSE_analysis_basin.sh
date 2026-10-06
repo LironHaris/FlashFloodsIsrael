@@ -15,6 +15,9 @@ conda activate flashfloods
 
 # 3. הגדרת תיקיית קאש למטפלוטליב
 export MPLCONFIGDIR=/sci/labs/efratmorin/liron.haris/.matplotlib_cache
+# ללא תצוגה גרפית: מונע קריסה כש-DISPLAY של ssh -X עובר לג'וב ונסגר
+export MPLBACKEND=Agg
+unset DISPLAY
 
 # 3b. wandb writes its cache/config to $HOME by default, which resolves to the
 # near-full /cs/usr network home on compute nodes - force it into lab space instead.

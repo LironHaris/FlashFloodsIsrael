@@ -20,6 +20,8 @@ Description: Runs an already-trained model (config['checkpoint_path'], or
 import argparse
 import os
 
+import matplotlib
+matplotlib.use('Agg')  # file-only backend: never needs an X display (ssh -X / cluster nodes)
 import matplotlib.pyplot as plt
 import pandas as pd
 import wandb
