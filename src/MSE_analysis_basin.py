@@ -28,29 +28,30 @@ import wandb
 from torch.utils.data import DataLoader
 
 from train import load_config, get_loss_criterion
-from dataset import IsraelBasinsDataset, _get_split_bounds_and_config, _resolve_num_workers
+from dataset import IsraelBasinsDataset, _get_split_bounds_and_config, _resolve_num_workers, has_validation_split
 from train_sanity import validate_epoch_with_breakdown, to_value_and_pct, plot_breakdown_pie
 from MSE_analysis import clip_train_periods, load_trained_model
 
 
 def build_scopes(config, use_basin_splits):
-    """[(scope_name, split_type, periods)] - split_type picks the NaN tolerance."""
+    """[(scope_name, split_type, periods)] - split_type picks the NaN tolerance.
+    The val scope is skipped for configs without a validation split (cross-validation)."""
     train_periods = [(p['start_date'], p['end_date']) for p in clip_train_periods(config['train_periods'])]
-    val_periods = _get_split_bounds_and_config('val', config, use_basin_splits)[1]
     test_periods = _get_split_bounds_and_config('test', config, use_basin_splits)[1]
-    return [
-        ('train', 'train', train_periods),
-        ('val', 'val', val_periods),
-        ('test', 'test', test_periods),
-        ('full', 'test', [(None, None)]),
-    ]
+    scopes = [('train', 'train', train_periods)]
+    if has_validation_split(config):
+        scopes.append(('val', 'val', _get_split_bounds_and_config('val', config, use_basin_splits)[1]))
+    scopes += [('test', 'test', test_periods), ('full', 'test', [(None, None)])]
+    return scopes
 
 
 def load_split_basin_lists(config):
-    """{split_type: set of basin ids} from the split basin list files."""
+    """{split_type: set of basin ids} from the split basin list files the config defines."""
     lists = {}
     for split_type, key in (('train', 'train_basin_file'), ('val', 'validation_basin_file'),
                             ('test', 'test_basin_file')):
+        if not config.get(key):
+            continue
         with open(config[key], 'r') as f:
             lists[split_type] = {line.strip() for line in f if line.strip()}
     return lists
@@ -71,13 +72,6 @@ def build_basin_loader(basin_id, split_type, periods, config, use_basin_splits):
 
 def run_basin_mse_analysis(config_path, basin_ids, top_n, use_wandb_override=None):
     config = load_config(config_path)
-
-    cv_config = config.get('cross_validation', {}) or {}
-    if cv_config.get('enabled', False):
-        raise ValueError(
-            "MSE_analysis_basin.py does not support cross_validation-enabled configs: it relies "
-            "on IsraelBasinsDataset's sample_basin_mappings/sample_date_mappings, not present on "
-            "the CV fold path. Use a config with cross_validation.enabled: false.")
 
     use_spatial = config.get('use_basin_splits', True)
     hydro_year_start_month = config.get('hydro_year_start_month', 10)

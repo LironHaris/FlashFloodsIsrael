@@ -71,13 +71,19 @@ def _safe_xlim(start, end):
 
 def load_basin_rain_series(basin, config):
     """
-    De-normalized (physical mm/h) hourly rain series for a basin, for use as
-    a hydrograph rain overlay. hourly_precipitation in the processed
-    timeseries is z-score normalized (baked in by preprocess_dynamic_data.py),
-    so this reverses that using the basin's own mean/std already recorded in
-    the availability report: rain_mm = normalized * std + mean.
+    Physical (mm/h) hourly rain series for a basin, for use as a hydrograph
+    rain overlay. The processed timeseries holds raw rain (normalization is
+    applied on the fly at training time - see normalization.py), so
+    hourly_precipitation is used as-is.
+
+    Transition guard: raw rain is never negative, so negative values mean the
+    CSV is still from the old pipeline that baked a z-score into it. Then the
+    old availability report's hourly_precipitation_mean/std (if still present)
+    reverse it as before (rain_mm = z * std + mean); otherwise None is returned
+    - no rain overlay rather than a wrong one.
+
     Returns a DataFrame with ['timestamp', 'rain_mm'], or None if the basin
-    has no processed file / no availability record.
+    has no processed file.
     """
     processed_path = os.path.join(config['processed_timeseries_dir'], f'{basin}.csv')
     if not os.path.exists(processed_path):
@@ -85,14 +91,21 @@ def load_basin_rain_series(basin, config):
 
     df = pd.read_csv(processed_path, usecols=['date', 'hourly_precipitation'])
     df['timestamp'] = pd.to_datetime(df['date'])
+    df['rain_mm'] = df['hourly_precipitation']
 
-    availability_df = pd.read_csv(config['availability_report_file']).set_index('gauge_id')
-    if basin not in availability_df.index:
-        return None
-    mean = availability_df.loc[basin, 'hourly_precipitation_mean']
-    std = availability_df.loc[basin, 'hourly_precipitation_std']
+    if (df['hourly_precipitation'] < -1e-6).any():  # beyond float round-off
+        report_path = config.get('availability_report_file')
+        report = pd.read_csv(report_path).set_index('gauge_id') if report_path and os.path.exists(report_path) else None
+        if report is None or basin not in report.index or 'hourly_precipitation_std' not in report.columns:
+            print(f"[Warning] {basin}: processed rain looks z-scored (negative values) and no "
+                  f"normalization stats are available to reverse it - re-run "
+                  f"preprocess_dynamic_data.py. Skipping the rain overlay.")
+            return None
+        print(f"[Warning] {basin}: processed rain looks z-scored (old pipeline) - de-normalizing "
+              f"with the availability report's stats. Re-run preprocess_dynamic_data.py.")
+        df['rain_mm'] = (df['hourly_precipitation'] * report.loc[basin, 'hourly_precipitation_std']
+                         + report.loc[basin, 'hourly_precipitation_mean'])
 
-    df['rain_mm'] = df['hourly_precipitation'] * std + mean
     return df[['timestamp', 'rain_mm']]
 
 

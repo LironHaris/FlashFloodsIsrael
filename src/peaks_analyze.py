@@ -21,15 +21,16 @@ import pandas as pd
 
 import find_flood_events as ffe
 import compare_flood_events as cfe
+from normalization import resolve_normalization_stats
 
 
 def load_flow_std_map(config):
-    """{basin_id: flow_std} from config['availability_report_file']. The
-    gauge_id column there is already 'il_'-prefixed, identical in format to
-    every other basin_id used across this pipeline - a direct string lookup,
-    no prefix stripping needed."""
-    availability_df = pd.read_csv(config['availability_report_file'], dtype={'gauge_id': str})
-    return dict(zip(availability_df['gauge_id'], availability_df['flow_std']))
+    """{basin_id: flow_std} - each basin's train-period target std, the same
+    statistic the model's targets were normalized with (resolved from the
+    run's normalization_stats.json - see normalization.py)."""
+    target_col = config['target_variables'][0]
+    stats = resolve_normalization_stats(config)
+    return {basin_id: feats[target_col]['std'] for basin_id, feats in stats.items()}
 
 
 def _load_basin_report(basin_id, exp_dir):

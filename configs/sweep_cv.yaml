@@ -1,0 +1,32 @@
+# Bayesian hyperparameter search with k-fold cross-validation (src/cross_validation_sweep.py).
+# Each trial trains one model per cross_validation.groups entry of the base config
+# (FLASHFLOODS_CONFIG, e.g. configs/cross_val_0_3.yml); val_loss = mean of the folds'
+# best val_loss. Early drop compares a fold with the SAME fold of the sweep's finished
+# trials at early_drop_epoch (top-k); the first early_drop_top_k trials always run fully.
+program: src/cross_validation_sweep.py
+project: flash-floods-israel
+method: bayes
+metric:
+  goal: minimize
+  name: val_loss
+parameters:
+  early_drop_enabled:
+    value: true
+  early_drop_top_k:
+    value: 3
+  early_drop_epoch:
+    value: 5
+  hidden_size:
+    values: [32, 64, 128, 256]
+  learning_rate:
+    distribution: log_uniform_values
+    min: 0.0001
+    max: 0.01
+  batch_size:
+    values: [64, 128, 256, 512]
+  clip_gradient_norm:
+    values: [0.5, 1.0, 2.0, 5.0]
+  output_dropout:
+    values: [0.0, 0.25, 0.4, 0.5]
+  weight_decay:
+    values: [0.0, 0.001, 0.01, 0.05, 0.1]

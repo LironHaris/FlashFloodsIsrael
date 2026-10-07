@@ -2,6 +2,9 @@
 Module: dataset.py
 Description: Hourly Multi-Basin Data Pipeline for Entity-Aware LSTM (EA-LSTM) Flood Forecasting.
              Optimized to isolate and align static catchment attributes dynamically per basin.
+             The processed timeseries CSVs hold raw values; dynamic inputs and targets are
+             z-scored on the fly with per-basin train-period statistics resolved by
+             normalization.py.
 """
 
 import os
@@ -11,12 +14,16 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset, ConcatDataset, DataLoader
 
+from normalization import basin_stats
+
 class SingleBasinDataset(Dataset):
     """
     A PyTorch Dataset that handles the dynamic and static data for a SINGLE basin.
+    dyn_mean/dyn_std (one value per config['dynamic_inputs'] feature) and
+    flow_mean/flow_std are this basin's train-period statistics (normalization.py).
     """
     def __init__(self, dynamic_path, static_path, config, periods, flow_std: float = 1.0,
-                 flow_mean: float = 0.0, split_type: str = 'train', zero_impute_values=None):
+                 flow_mean: float = 0.0, split_type: str = 'train', dyn_mean=None, dyn_std=None):
         # Extract basin ID dynamically from filename
         self.gauge_id = str(os.path.basename(dynamic_path).replace('.csv', ''))
 
@@ -42,8 +49,13 @@ class SingleBasinDataset(Dataset):
         self.target_cols = config['target_variables']
         self.forecast_lead_times = config['forecast_lead_times']
         
-        # Convert to fast NumPy arrays
-        self.x_dynamic = dyn_df[self.dynamic_feature_names].values.astype(np.float32)
+        # Convert to fast NumPy arrays. The CSV holds raw dynamic inputs - z-score them
+        # here with this basin's train-period statistics (NaNs stay NaN).
+        n_dyn = len(self.dynamic_feature_names)
+        dyn_mean = np.zeros(n_dyn, dtype=np.float32) if dyn_mean is None else np.asarray(dyn_mean, dtype=np.float32)
+        dyn_std = np.ones(n_dyn, dtype=np.float32) if dyn_std is None else np.asarray(dyn_std, dtype=np.float32)
+        x_dynamic_raw = dyn_df[self.dynamic_feature_names].values.astype(np.float32)
+        self.x_dynamic = (x_dynamic_raw - dyn_mean) / dyn_std
         self.y = dyn_df[self.target_cols].values.astype(np.float32)
 
         # Slice specific basin row inside the master static matrix file
@@ -55,11 +67,10 @@ class SingleBasinDataset(Dataset):
         # by preprocess_static_attributes.py before this file is loaded.
         self.x_static = basin_static_row[self.static_feature_names].iloc[0].values.astype(np.float32)
 
-        # Zero-rainfall-equivalent value per dynamic feature (in the same z-score space
-        # the saved CSV already uses), used to fill in NaNs that fall within a window's
-        # per-feature tolerance instead of excluding the whole window.
-        if zero_impute_values is None:
-            zero_impute_values = np.zeros(len(self.dynamic_feature_names), dtype=np.float32)
+        # Zero-rainfall-equivalent value per dynamic feature (raw 0 in the z-score space
+        # above), used to fill in NaNs that fall within a window's per-feature tolerance
+        # instead of excluding the whole window.
+        zero_impute_values = (0.0 - dyn_mean) / dyn_std
         self.x_dynamic_filled = np.where(np.isnan(self.x_dynamic), zero_impute_values, self.x_dynamic)
 
         # Build valid sample indices. A window is excluded if:
@@ -84,9 +95,18 @@ class SingleBasinDataset(Dataset):
         window_nan_pct = (csum[starts + self.seq_length] - csum[starts]) / self.seq_length * 100
         input_ok = np.all(window_nan_pct <= allowed_nan_pct[None, :], axis=1)
 
+        # A window (seq_length inputs + furthest lead) must cover consecutive hours.
+        # Rows are only gap-free where the CSV is: disjoint periods (e.g. a held-out
+        # CV fold's years) and rows dropped in preprocessing (dry years, long NaN
+        # stretches) leave gaps that a window must never be built across.
+        hour_steps = np.diff(self.dates.values).astype('timedelta64[h]').astype(np.int64)
+        break_csum = np.concatenate([[0], np.cumsum(hour_steps != 1)])
+        span = self.seq_length - 1 + max_lead
+        contiguous = break_csum[starts + span] - break_csum[starts] == 0
+
         self.valid_indices = [
             i for i in range(n_potential)
-            if input_ok[i]
+            if input_ok[i] and contiguous[i]
             and not any(
                 np.isnan(self.y[i + self.seq_length - 1 + lead]).any()
                 for lead in self.forecast_lead_times
@@ -178,16 +198,116 @@ def _get_split_bounds_and_config(split_type, config, use_basin_splits):
 
     elif split_type in ['val', 'test']:
         prefix = 'validation' if split_type == 'val' else 'test'
-        # When basin splits are disabled, fall back to the train basin list (master list / directory scan)
-        basin_list_file = config[f'{prefix}_basin_file'] if use_basin_splits else config['train_basin_file']
+        # When basin splits are disabled, fall back to the train basin list (master list / directory scan).
+        # A config without a validation_basin_file (e.g. a CV fold) validates on the train basins.
+        basin_list_file = (config.get(f'{prefix}_basin_file') or config['train_basin_file']
+                           if use_basin_splits else config['train_basin_file'])
 
-        raw_start = pd.to_datetime(config[f'{prefix}_start_date'])
-        start_date = (raw_start - pd.Timedelta(hours=buffer_hours)).strftime('%Y-%m-%d %H:%M:%S')
-        end_date = config[f'{prefix}_end_date']
+        if split_type == 'val' and config.get('validation_periods'):
+            # Explicit (possibly disjoint) validation periods, e.g. a CV fold's held-out years
+            raw_periods = [(s, e) for s, e in config['validation_periods']]
+        elif f'{prefix}_start_date' in config and f'{prefix}_end_date' in config:
+            raw_periods = [(config[f'{prefix}_start_date'], config[f'{prefix}_end_date'])]
+        else:
+            raise ValueError(
+                f"This config has no {prefix} split ({prefix}_start_date/{prefix}_end_date"
+                + (" or validation_periods" if split_type == 'val' else "") + " missing). "
+                "Cross-validation configs validate per fold - see cross_validation_sweep.py.")
 
-        return basin_list_file, [(start_date, end_date)], False
+        # Each period gets a seq_length warm-up buffer so its first hours can be targets
+        periods = [
+            ((pd.to_datetime(s) - pd.Timedelta(hours=buffer_hours)).strftime('%Y-%m-%d %H:%M:%S'), e)
+            for s, e in raw_periods
+        ]
+        return basin_list_file, periods, False
 
     raise ValueError("split_type must be either 'train', 'val', or 'test'")
+
+
+def has_validation_split(config):
+    """True if the config defines a validation split (dates or explicit validation_periods)."""
+    return bool(config.get('validation_periods')) or (
+        'validation_start_date' in config and 'validation_end_date' in config)
+
+
+# --------------------------------------------------------------------------------
+# Cross-validation folds (used by cross_validation_sweep.py)
+# --------------------------------------------------------------------------------
+
+def _to_ts(value, default):
+    return pd.Timestamp(value) if value else default
+
+
+def subtract_periods(periods, removed):
+    """
+    periods minus removed, both lists of (start, end) datetime strings (start may be
+    empty/None = open start). Returns the remaining (start, end) pieces in order;
+    a removed range [s, e] leaves pieces ending 1h before s and starting 1h after e.
+    """
+    one_hour = pd.Timedelta(hours=1)
+    pieces = [(_to_ts(s, pd.Timestamp.min), _to_ts(e, pd.Timestamp.max)) for s, e in periods]
+    for rs, re in removed:
+        rs, re = pd.Timestamp(rs), pd.Timestamp(re)
+        next_pieces = []
+        for ps, pe in pieces:
+            if re < ps or rs > pe:
+                next_pieces.append((ps, pe))
+                continue
+            if ps < rs:
+                next_pieces.append((ps, rs - one_hour))
+            if pe > re:
+                next_pieces.append((re + one_hour, pe))
+        pieces = next_pieces
+
+    fmt = '%Y-%m-%d %H:%M:%S'
+    return [(None if s == pd.Timestamp.min else s.strftime(fmt), e.strftime(fmt)) for s, e in pieces]
+
+
+def build_fold_configs(config):
+    """
+    One config per cross_validation.groups entry. Fold j holds out group j's
+    hydrological years as validation (validation_periods, validated on the train
+    basin list) and trains on train_periods minus those years. Pool years in no
+    group are always trained on. Each fold config has the cross_validation block
+    removed, so it is an ordinary single-split training config - and gets its own
+    normalization statistics from its own train_periods (normalization.py).
+    """
+    import copy
+
+    groups = config['cross_validation']['groups']
+    hydro_start = config.get('hydro_year_start_month', 10)
+    pool = [(p.get('start_date') or None, p['end_date']) for p in config['train_periods']]
+    test_start, test_end = pd.Timestamp(config['test_start_date']), pd.Timestamp(config['test_end_date'])
+
+    seen = set()
+    for idx, years in enumerate(groups):
+        dup = seen.intersection(years)
+        if dup:
+            raise ValueError(f"cross_validation.groups: year(s) {sorted(dup)} appear in more than one group.")
+        seen.update(years)
+
+    fold_configs = []
+    for idx, years in enumerate(groups):
+        group_periods = build_year_periods(years, hydro_start)
+        for s, e in group_periods:
+            s, e = pd.Timestamp(s), pd.Timestamp(e)
+            if s <= test_end and e >= test_start:
+                raise ValueError(f"cross_validation.groups[{idx}] {years} overlaps the test period.")
+            inside = any(_to_ts(ps, pd.Timestamp.min) <= s and e <= _to_ts(pe, pd.Timestamp.max)
+                         for ps, pe in pool)
+            if not inside:
+                raise ValueError(f"cross_validation.groups[{idx}] {years} is not inside train_periods - "
+                                 "train_periods must be the whole non-test pool the groups are drawn from.")
+
+        fold = copy.deepcopy(config)
+        fold.pop('cross_validation', None)
+        fold.pop('normalization_stats', None)
+        fold['train_periods'] = [{'start_date': s, 'end_date': e}
+                                 for s, e in subtract_periods(pool, group_periods)]
+        fold['validation_periods'] = [[s, e] for s, e in group_periods]
+        fold['validation_basin_file'] = config['train_basin_file']
+        fold_configs.append(fold)
+    return fold_configs
 
 
 def _load_basin_ids(basin_list_file, config, use_basin_splits, split_type='train'):
@@ -209,24 +329,8 @@ def _build_basin_datasets(basin_ids, config, periods, split_type='train'):
     dyn_dir = config['processed_timeseries_dir'] # Points to the clean resampled data
     static_file_path = config['normalized_static_attributes_file']
     basin_datasets = []
-
-    # Load per-basin flow mean/std (train years only) written by preprocess_dynamic_data.py
-    stats_df = pd.read_csv(config['availability_report_file'])
-    flow_std_map = dict(zip(stats_df['gauge_id'].astype(str), stats_df['flow_std']))
-    flow_mean_map = dict(zip(stats_df['gauge_id'].astype(str), stats_df['flow_mean']))
-
-    # Per-basin zero-rainfall-equivalent z-score for each dynamic input, using the same
-    # per-feature mean/std preprocess_dynamic_data.py already baked into the report -
-    # used to impute NaNs that fall within a window's configured tolerance (see
-    # SingleBasinDataset's valid_indices/x_dynamic_filled).
     dynamic_feature_names = config['dynamic_inputs']
-    stats_by_gauge = stats_df.set_index(stats_df['gauge_id'].astype(str))
-    zero_impute_maps = {}
-    for gauge_id, row in stats_by_gauge.iterrows():
-        zero_impute_maps[gauge_id] = np.array([
-            (0.0 - row.get(f'{feat}_mean', 0.0)) / row.get(f'{feat}_std', 1.0)
-            for feat in dynamic_feature_names
-        ], dtype=np.float32)
+    target_col = config['target_variables'][0]
 
     for basin_id in basin_ids:
         # Dynamic files are stored as [gauge_id].csv based on preprocessing script
@@ -234,13 +338,16 @@ def _build_basin_datasets(basin_ids, config, periods, split_type='train'):
 
         # Safeguard verification: ensuring both dynamic sequence data and master static metrics exist
         if os.path.exists(dyn_path) and os.path.exists(static_file_path):
-            flow_std = flow_std_map.get(basin_id, 1.0)
-            flow_mean = flow_mean_map.get(basin_id, 0.0)
-            zero_impute_values = zero_impute_maps.get(basin_id)
+            # Per-basin train-period statistics (normalization.py) - inputs and target
+            # are z-scored with these inside SingleBasinDataset.
+            stats = basin_stats(config, basin_id)
+            dyn_mean = [stats[feat]['mean'] for feat in dynamic_feature_names]
+            dyn_std = [stats[feat]['std'] for feat in dynamic_feature_names]
             # Slice specific basin row inside SingleBasinDataset initialization
-            basin_ds = SingleBasinDataset(dyn_path, static_file_path, config, periods, flow_std,
-                                           flow_mean=flow_mean, split_type=split_type,
-                                           zero_impute_values=zero_impute_values)
+            basin_ds = SingleBasinDataset(dyn_path, static_file_path, config, periods,
+                                           flow_std=stats[target_col]['std'],
+                                           flow_mean=stats[target_col]['mean'], split_type=split_type,
+                                           dyn_mean=dyn_mean, dyn_std=dyn_std)
             if len(basin_ds) > 0:
                 basin_datasets.append(basin_ds)
         else:
@@ -284,7 +391,7 @@ def get_dataloader(split_type, config, use_basin_splits=True):
 
 
 # --------------------------------------------------------------------------------
-# K-Fold Cross-Validation Support
+# Hydrological-year period helpers
 # --------------------------------------------------------------------------------
 
 def _consecutive_year_runs(years):
@@ -331,85 +438,3 @@ def build_year_periods(years, hydro_year_start_month=10):
     """
     return [build_year_range_period(s, e, hydro_year_start_month)
             for s, e in _consecutive_year_runs(years)]
-
-
-def build_cv_group_datasets(config, use_basin_splits=True):
-    """
-    Precomputes everything a k-fold cross-validation training run needs, once:
-      - the fixed/always-train slice, i.e. whatever train_periods already
-        resolves to (e.g. an open-start "years before the CV pool" entry) -
-        never rotated out as validation.
-      - for every configured cross_validation.groups entry, both a
-        train-tolerance and an eval-tolerance set of per-basin datasets (the
-        NaN-tolerance policy - train_max_nan_pct vs eval_max_nan_pct - depends
-        on which role a group plays for a given epoch, so both are built
-        up front rather than re-read from disk every epoch).
-    Raises ValueError if any group's years are claimed by another group,
-    overlap the test period, or overlap train_periods (the fixed slice must
-    be trimmed to exclude any year handed to cross_validation.groups).
-    Returns (fixed_train_datasets, group_datasets) where group_datasets is
-    {group_idx: {'train': [...], 'val': [...]}}.
-    """
-    cv_config = config['cross_validation']
-    groups = cv_config['groups']
-    hydro_start = config.get('hydro_year_start_month', 10)
-    basin_ids = _load_basin_ids(config['train_basin_file'], config, use_basin_splits, 'train')
-
-    seen_years = set()
-    for g in groups:
-        dup = seen_years.intersection(g)
-        if dup:
-            raise ValueError(f"cross_validation.groups: year(s) {dup} appear in more than one group.")
-        seen_years.update(g)
-
-    # Fixed/always-train slice: whatever train_periods already resolves to -
-    # unconditionally included in every fold's training set.
-    _, fixed_periods, _ = _get_split_bounds_and_config('train', config, use_basin_splits)
-    fixed_train_datasets = _build_basin_datasets(basin_ids, config, fixed_periods, split_type='train')
-
-    test_start = pd.Timestamp(config['test_start_date'])
-    test_end = pd.Timestamp(config['test_end_date'])
-
-    group_datasets = {}
-    for idx, years in enumerate(groups):
-        periods = build_year_periods(years, hydro_start)
-        for start_str, end_str in periods:
-            s, e = pd.Timestamp(start_str), pd.Timestamp(end_str)
-            if s <= test_end and e >= test_start:
-                raise ValueError(f"cross_validation.groups[{idx}] year period "
-                                  f"[{start_str}, {end_str}] overlaps the test period.")
-            for fstart, fend in fixed_periods:
-                if fstart is not None and s <= pd.Timestamp(fend) and e >= pd.Timestamp(fstart):
-                    raise ValueError(f"cross_validation.groups[{idx}] year period "
-                                      f"[{start_str}, {end_str}] overlaps train_periods "
-                                      f"- trim train_periods down to just the fixed portion.")
-        group_datasets[idx] = {
-            'train': _build_basin_datasets(basin_ids, config, periods, split_type='train'),
-            'val': _build_basin_datasets(basin_ids, config, periods, split_type='val'),
-        }
-    return fixed_train_datasets, group_datasets
-
-
-def get_cv_fold_dataloaders(fixed_train_datasets, group_datasets, val_group_idx, config):
-    """
-    Cheaply recombines the datasets precomputed by build_cv_group_datasets
-    into this epoch's train/val DataLoaders - no CSV re-reads. val_group_idx
-    is held out as validation (its eval-tolerance variant); the fixed slice
-    plus every other group's train-tolerance variant form the training set.
-    """
-    train_datasets = list(fixed_train_datasets) + [
-        ds for g, variants in group_datasets.items()
-        if g != val_group_idx for ds in variants['train']
-    ]
-    val_datasets = group_datasets[val_group_idx]['val']
-
-    train_loader = DataLoader(ConcatDataset(train_datasets), batch_size=config['batch_size'],
-                               shuffle=True, num_workers=_resolve_num_workers(config), drop_last=False)
-    val_loader = DataLoader(ConcatDataset(val_datasets), batch_size=config['batch_size'],
-                             shuffle=False, num_workers=_resolve_num_workers(config), drop_last=False)
-
-    for loader in (train_loader, val_loader):
-        loader.static_feature_names = config['static_attributes']
-        loader.dynamic_feature_names = config['dynamic_inputs']
-
-    return train_loader, val_loader

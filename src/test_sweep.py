@@ -67,6 +67,12 @@ def load_model(config, run_id, device):
     ckpt = torch.load(ckpt_path, map_location=device)
     model.load_state_dict(ckpt['model_state_dict'])
     model.eval()
+    # Evaluate with this trial's own normalization statistics: stored in the
+    # checkpoint (new runs), else the normalization_stats.json next to it
+    # (resolved via checkpoint_path - see normalization.py).
+    config['checkpoint_path'] = ckpt_path
+    if 'normalization_stats' in ckpt:
+        config['normalization_stats'] = ckpt['normalization_stats']
     return model
 
 def compute_nse_per_basin(basin, test_dataset, model, device, config):

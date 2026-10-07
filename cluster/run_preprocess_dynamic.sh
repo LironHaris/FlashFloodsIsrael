@@ -15,4 +15,4 @@ export HOME=/sci/labs/efratmorin/liron.haris/
 cd /sci/labs/efratmorin/liron.haris/FlashFloodsIsrael
 
 # 3. הרצת סקריפט ה-Preprocess שלך
-python src/preprocess_dynamic_data.py
+python src/preprocess_dynamic_data.py --config configs/preprocess.yml

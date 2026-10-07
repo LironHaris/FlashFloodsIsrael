@@ -18,7 +18,7 @@ Pipeline Architecture & Functional Stages:
 
 2. Timeline Realignment & Gap Injection:
    Enforces a strict, continuous hourly index mapped between the basin's earliest available 
-   dynamic timestamp ('basin_start_date') through the global experiment boundary ('test_end_date'). 
+   dynamic timestamp ('basin_start_date') through the end of the record ('record_end_date'). 
    Any missing temporal steps or data gaps are explicitly instantiated as NaN cells. 
    This maximizes historical training data per individual basin.
 
@@ -38,6 +38,12 @@ Pipeline Architecture & Functional Stages:
    compromise the learning capabilities of the neural model and induce false physical behaviors.
    Any training window touching a remaining NaN is excluded downstream by dataset.py's validity
    check.
+
+5. Raw Output (no normalization here):
+   The processed CSVs hold RAW values (rain in mm, flow in m3/s). Normalization statistics are
+   computed at training time from train_periods only and applied on the fly - see
+   normalization.py and dataset.py. Baking a z-score in here would tie every trained model to
+   whatever stats happened to be on disk.
 """
 
 import os
@@ -221,13 +227,9 @@ def process_dynamic_data(config):
     Orchestrates the data pipeline using modular helper functions.
     All paths and parameters are drawn directly from the config.
     """
-    # Extract global end date boundary: the latest end date across all configured
-    # train/validation/test periods, since train periods can now extend past test.
-    all_end_dates = (
-        [p['end_date'] for p in config['train_periods']]
-        + [config['validation_end_date'], config['test_end_date']]
-    )
-    END_DATE = max(pd.to_datetime(d) for d in all_end_dates)
+    # End of the processed record (preprocessing config's record_end_date - the
+    # end of the non-test pool, which can extend past the test period).
+    END_DATE = max(pd.to_datetime(config['record_end_date']), pd.to_datetime(config['test_end_date']))
     
     # Extract all paths from the configuration
     input_dir = config['raw_dynamic_dir']
@@ -273,34 +275,29 @@ def process_dynamic_data(config):
         # per-basin console log below - not written to the availability report).
         flow_available = analyze_data_quality(aligned_df)
 
-        # Step 3b: Exclude basins with no viable split at all - if a basin fails the
-        # combined (flow AND rain) availability threshold in EVERY one of train/val/test,
-        # there's nothing useful to do with it. A basin passing in just one or two splits
-        # still gets processed here; basin_splits.py decides per-split membership from
-        # these same three values, so e.g. good-train/good-test/no-val data is still used
-        # for train and test, just left out of israel_val.txt.
+        # Step 3b: Exclude basins with no viable period at all - preprocessing only
+        # distinguishes NON-TEST (the pool training/CV draw from; reported as
+        # combined_availability_pct_train) and TEST. A basin failing the combined
+        # (flow AND rain) availability threshold in both is dropped; one passing in
+        # just one is still processed, and basin_splits.py lists it accordingly.
         # Checked before any further processing so excluded basins skip the rest of
         # the pipeline entirely and never get a processed timeseries CSV written -
         # dataset.py already treats a missing CSV as "basin not available."
-        train_bounds = [(p.get('start_date'), p['end_date']) for p in config['train_periods']]
-        combined_train = combined_availability_for_periods(aligned_df, train_bounds)
-        combined_val = combined_availability_for_periods(
-            aligned_df, [(config['validation_start_date'], config['validation_end_date'])])
+        combined_train = combined_availability_for_periods(aligned_df, fqc.non_test_periods(config))
         combined_test = combined_availability_for_periods(
             aligned_df, [(config['test_start_date'], config['test_end_date'])])
 
         min_pct = config['min_combined_availability_pct']
-        if combined_train < min_pct and combined_val < min_pct and combined_test < min_pct:
+        if combined_train < min_pct and combined_test < min_pct:
             availability_records.append({
                 'gauge_id': file_name.replace('.csv', ''),
                 'combined_availability_pct_train': combined_train,
-                'combined_availability_pct_val': combined_val,
                 'combined_availability_pct_test': combined_test,
                 'excluded': True,
             })
             tqdm.write(
-                f"Skipped {file_name}: combined availability train={combined_train:.2f}% "
-                f"val={combined_val:.2f}% test={combined_test:.2f}%, below the {min_pct}% threshold in every split."
+                f"Skipped {file_name}: combined availability non-test={combined_train:.2f}% "
+                f"test={combined_test:.2f}%, below the {min_pct}% threshold in both."
             )
             continue
 
@@ -318,15 +315,11 @@ def process_dynamic_data(config):
         # Step 5: Remove NaN stretches longer than seq_length (untrainable dead weight)
         clean_df, n_dropped = drop_long_flow_nan_stretches(clean_df, seq_length=config['seq_length'])
 
-        # Normalization now happens in Pass 3, after dry-year and
-        # nan_flow_days screening (see below) - baking it in here, before
-        # those rows get dropped, would make the stats reflect data that no
-        # longer exists in the final file. Save the unnormalized,
-        # screening-pending series for now; Pass 3 re-reads and finalizes it.
+        # Saved raw (never normalized - see normalization.py); Pass 2 then
+        # screens dry years / nan_flow_days in place.
         availability_records.append({
             'gauge_id': file_name.replace('.csv', ''),
             'combined_availability_pct_train': combined_train,
-            'combined_availability_pct_val': combined_val,
             'combined_availability_pct_test': combined_test,
             'excluded': False,
         })
@@ -336,9 +329,8 @@ def process_dynamic_data(config):
 
         tqdm.write(f"Pass 1 done {file_name}: Processed from {basin_start_date} to {END_DATE}. {flow_available:.2f}% flow data. Dropped {n_dropped} rows (long NaN stretches).")
 
-    # Write the intermediate availability report (combined_availability_pct_*
-    # only - flow/rain normalization stats are added in Pass 3 below). This
-    # must exist on disk before Pass 2, since fqc.run_quality_check's
+    # Write the availability report (combined_availability_pct_* + excluded).
+    # This must exist on disk before Pass 2, since fqc.run_quality_check's
     # is_year_used reads combined_availability_pct_* from this file.
     report_df = pd.DataFrame(availability_records)
     report_df.to_csv(report_path, index=False)
@@ -354,7 +346,7 @@ def process_dynamic_data(config):
 
     # Pass 2: screen out "dry" hydrological years (flagged as used-but-flow-free
     # by flow_quality_check's availability-threshold logic) directly from the
-    # processed timeseries just written - in place, before normalization.
+    # processed timeseries just written - in place.
     fqc.run_quality_check(
         config,
         input_dir=output_dir,
@@ -380,53 +372,14 @@ def process_dynamic_data(config):
         nan_flow_days_dir=config['nan_flow_days_output_dir'],
     )
 
-    # Pass 3: now that every excluded row (long NaN stretches, dry years,
-    # nan_flow_days) is gone, recompute normalization from what actually
-    # remains and bake it in - same formulas as before, just run against the
-    # fully-screened data instead of the pre-screening data.
-    train_bounds = [(p.get('start_date'), p['end_date']) for p in config['train_periods']]
-    rain_feature_names = ['hourly_precipitation'] + [w['name'] for w in config['cumulative_rain_windows']]
-    records_by_basin = {r['gauge_id']: r for r in included_records}
-
-    for basin_id in tqdm(records_by_basin, desc="Pass 3: Normalizing", unit="basin"):
-        file_path = os.path.join(output_dir, f"{basin_id}.csv")
-        clean_df = pd.read_csv(file_path, index_col='date', parse_dates=True)
-
-        train_slice = pd.concat([clean_df.loc[start:end] for start, end in train_bounds])
-        flow_mean = float(np.nanmean(train_slice['Flow_m3_sec'].values))
-        flow_std = float(np.nanstd(train_slice['Flow_m3_sec'].values))
-        if not np.isfinite(flow_std) or flow_std == 0.0:
-            flow_mean = float(np.nanmean(clean_df['Flow_m3_sec'].values))
-            flow_std = float(np.nanstd(clean_df['Flow_m3_sec'].values))
-
-        rain_norm_stats = {}
-        for feature_name in rain_feature_names:
-            feature_mean = float(np.nanmean(train_slice[feature_name].values))
-            feature_std = float(np.nanstd(train_slice[feature_name].values))
-            if not np.isfinite(feature_std) or feature_std == 0.0:
-                feature_mean = float(np.nanmean(clean_df[feature_name].values))
-                feature_std = float(np.nanstd(clean_df[feature_name].values))
-
-            clean_df[feature_name] = (clean_df[feature_name] - feature_mean) / feature_std
-
-            rain_norm_stats[f'{feature_name}_mean'] = feature_mean
-            rain_norm_stats[f'{feature_name}_std'] = feature_std
-
-        clean_df.to_csv(file_path, index_label='date')
-
-        record = records_by_basin[basin_id]
-        record['flow_mean'] = flow_mean
-        record['flow_std'] = flow_std
-        record.update(rain_norm_stats)
-
-    # Final availability report, now with flow/rain normalization stats
-    # computed from the fully-screened data.
-    report_df = pd.DataFrame(availability_records)
-    report_df.to_csv(report_path, index=False)
+    # No Pass 3: the CSVs stay raw. Normalization statistics are computed at
+    # training time from train_periods only (normalization.py).
     print(f"\nSummary report saved to: {report_path}")
 
 if __name__ == "__main__":
-    CONFIG_PATH = "configs/config.yml"
-    yaml_config = load_config(CONFIG_PATH)
-    
-    process_dynamic_data(yaml_config)
+    import argparse
+    parser = argparse.ArgumentParser(description="Preprocess raw dynamic data into raw hourly timeseries.")
+    parser.add_argument("--config", type=str, default="configs/preprocess.yml",
+                        help="Preprocessing config (default configs/preprocess.yml).")
+    args = parser.parse_args()
+    process_dynamic_data(load_config(args.config))

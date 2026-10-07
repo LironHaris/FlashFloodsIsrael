@@ -9,9 +9,9 @@ Description: Sanity-check variant of train.py - trains identically (same
              two final pie charts once training finishes. Also writes a
              one-time, model-independent validation-set usage audit
              (val_usage_by_year.csv, val_usage_by_basin.csv - see
-             val_usage_audit.py) once training completes. Fixed
-             train/validation splits only - cross_validation-enabled configs
-             are rejected (see validate_epoch_with_breakdown's docstring).
+             val_usage_audit.py) once training completes. Like train.py,
+             normalization statistics come from train_periods only
+             (normalization.py) and are saved with every checkpoint.
 """
 
 import argparse
@@ -31,6 +31,7 @@ from train import (
 )
 from dataset import get_dataloader
 from model import EALSTMModel
+from normalization import prepare_normalization
 from flow_quality_check import get_hydrological_year
 from val_usage_audit import (
     compute_val_usage_breakdown, top_n_basin_ids_by_value, write_usage_csvs, log_usage_to_wandb,
@@ -47,11 +48,8 @@ def validate_epoch_with_breakdown(model, dataloader, criterion, device, hydro_ye
 
     Requires dataloader.dataset to be an IsraelBasinsDataset (exposes
     sample_basin_mappings/sample_date_mappings, index-aligned to
-    __getitem__) - true for the fixed val/test split path
-    (dataset.get_dataloader), NOT true for the cross-validation fold path
-    (dataset.get_cv_fold_dataloaders wraps a bare ConcatDataset of
-    SingleBasinDataset objects with no such mapping arrays). Callers must
-    reject cross_validation-enabled configs before calling this.
+    __getitem__) - true for dataset.get_dataloader / IsraelBasinsDataset,
+    not for a bare ConcatDataset.
 
     Relies on the validation DataLoader using shuffle=False with no custom
     sampler and drop_last=False (confirmed in dataset.py) - batch b's samples
@@ -184,15 +182,9 @@ def _load_existing_breakdown(csv_path, group_col):
 def main(config_path="configs/config.yml"):
     config = load_config(config_path)
 
-    cv_config = config.get('cross_validation', {}) or {}
-    if cv_config.get('enabled', False):
-        raise ValueError(
-            "train_sanity.py does not support cross_validation-enabled configs: the CV "
-            "fold validation dataloader (dataset.get_cv_fold_dataloaders) wraps a bare "
-            "ConcatDataset with no sample_basin_mappings/sample_date_mappings, which this "
-            "script's per-basin/per-year loss breakdown depends on. Use a config with "
-            "cross_validation.enabled: false."
-        )
+    if (config.get('cross_validation') or {}).get('enabled', False):
+        raise ValueError("train_sanity.py needs a fixed validation split - cross-validation "
+                         "configs are tuned with cross_validation_sweep.py instead.")
 
     set_seed(config.get('seed', 42))
 
@@ -205,6 +197,12 @@ def main(config_path="configs/config.yml"):
         print("[INFO] Spatial basin splits disabled via config. Using strict temporal configuration.")
     else:
         print("[INFO] Spatial basin splits enabled via config. Loading specific basin split files.")
+
+    # Normalization statistics from train_periods only, attached to config before
+    # any loader is built and persisted next to the checkpoints (see normalization.py).
+    run_dir = config.get('run_dir', './runs/')
+    exp_dir = os.path.join(run_dir, config['experiment_name'])
+    normalization_stats = prepare_normalization(config, exp_dir)
 
     print("[INFO] Constructing dataset pipelines and dataloaders...")
     epochs = config.get('epochs', 30)
@@ -236,8 +234,6 @@ def main(config_path="configs/config.yml"):
         start_epoch = checkpoint.get('epoch', 0)
         print(f"[INFO] Resumed after epoch {start_epoch}. Re-validating to establish best_val_loss baseline...")
 
-    run_dir = config.get('run_dir', './runs/')
-    exp_dir = os.path.join(run_dir, config['experiment_name'])
     os.makedirs(exp_dir, exist_ok=True)
 
     sanity_dir = os.path.join(exp_dir, "sanity_analysis")
@@ -352,6 +348,7 @@ def main(config_path="configs/config.yml"):
                 'epoch': epoch + 1,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
+                'normalization_stats': normalization_stats,
                 'val_loss': val_loss_report,
             }, best_checkpoint_path)
             print(f"Validation improvement detected. Saved as best_model.pt")
@@ -365,6 +362,7 @@ def main(config_path="configs/config.yml"):
                 'epoch': epoch + 1,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
+                'normalization_stats': normalization_stats,
                 'loss': train_loss,
             }, periodic_checkpoint_path)
 

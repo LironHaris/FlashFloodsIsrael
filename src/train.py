@@ -1,6 +1,13 @@
 """
 Module: train.py
 Description: Main Training, Validation, and Optimization Pipeline for Dynamic Multi-Horizon EA-LSTM.
+             run_training(config) trains one model on the configured train/validation
+             split and returns the best validation loss (the objective for hyperparameter
+             search - see run_sweep.py / cross_validation_sweep.py). With
+             cross_validation.enabled it is the final training instead: from scratch on
+             all train_periods, no validation, for --epochs (the CV sweep's avg_best_epoch). Dynamic inputs are normalized on the fly with
+             train-period-only statistics (normalization.py), which are saved to
+             exp_dir/normalization_stats.json and inside every checkpoint.
 """
 
 import argparse
@@ -16,7 +23,8 @@ import matplotlib.pyplot as plt
 import wandb
 
 from model import EALSTMModel
-from dataset import get_dataloader, build_cv_group_datasets, get_cv_fold_dataloaders
+from dataset import get_dataloader
+from normalization import prepare_normalization
 from loss import BatchAwareLossWrapper
 
 
@@ -162,7 +170,9 @@ def plot_training_curves(train_losses, val_losses, loss_setting, exp_dir):
     
     # Plot curves
     plt.plot(epochs_range, train_losses, color="#2b8cbe", linewidth=2, label="Training Loss")
-    plt.plot(epochs_range, val_losses, color="#cb181d", linewidth=2, linestyle="--", label="Validation Loss")
+    if val_losses:  # empty in final cross-validation training (no validation set)
+        plt.plot(range(1, len(val_losses) + 1), val_losses, color="#cb181d", linewidth=2,
+                 linestyle="--", label="Validation Loss")
     
     # Title and Labels using dynamic configuration values
     plt.title(f"EA-LSTM Training Optimization History\nOptimization Metric: {loss_setting.upper()}", 
@@ -181,15 +191,89 @@ def plot_training_curves(train_losses, val_losses, loss_setting, exp_dir):
     print(f"\n[OK] Training loss curves chart successfully exported to: {output_path}")
 
 
-def main(config_path="configs/config.yml"):
-    # Step 1: Ingest setup assets and configuration parameters
-    config = load_config(config_path)
+def _save_checkpoint(path, epoch, model, optimizer, normalization_stats, **extra):
+    """Every checkpoint carries the normalization statistics it was trained with,
+    so the model can always be evaluated with exactly the same input scaling."""
+    torch.save({
+        'epoch': epoch,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'normalization_stats': normalization_stats,
+        **extra,
+    }, path)
+
+
+def _write_run_config(config, config_path, exp_dir):
+    """exp_dir/config.yml: a copy of the source file when there is one, else the
+    in-memory config (e.g. a sweep trial's base config + swept values)."""
+    saved_config_path = os.path.join(exp_dir, "config.yml")
+    if config_path:
+        if os.path.abspath(config_path) != os.path.abspath(saved_config_path):
+            shutil.copy(config_path, saved_config_path)
+        return
+    dumpable = {k: v for k, v in config.items() if k != 'normalization_stats'}
+    with open(saved_config_path, 'w', encoding='utf-8') as f:
+        yaml.safe_dump(dumpable, f, allow_unicode=True, sort_keys=False)
+
+
+def run_training(config, config_path=None, exp_dir=None, use_wandb=None, init_wandb=True,
+                 epoch_callback=None, early_stop_patience=None, save_periodic=True,
+                 wandb_prefix='', write_summary=True):
+    """
+    Trains ONE model and returns its objective.
+
+    Two modes:
+    - Regular (cross_validation absent / enabled: false): train on the train
+      split, validate every epoch on the validation split, keep the best
+      epoch's weights as best_model.pt.
+    - Final cross-validation training (cross_validation.enabled: true): the
+      hyperparameters were already selected by cross_validation_sweep.py, so
+      the model is trained from scratch on ALL of train_periods (every
+      non-test year, CV groups included) with no validation set, for exactly
+      config['epochs'] epochs (set it - or pass train.py --epochs - to the
+      winning trial's avg_best_epoch). The last epoch's weights are saved as
+      best_model.pt so the test scripts work unchanged.
+
+    - config: full config dict (already merged with any hyperparameter
+      overrides, e.g. a sweep trial's values). Mutated: config gets
+      'normalization_stats' attached.
+    - exp_dir: output directory (default run_dir/experiment_name).
+    - use_wandb: default config['use_wandb']. init_wandb=False means the
+      caller already owns an active wandb run (sweep agent) - this function
+      then only logs to it and never calls wandb.init/finish.
+    - epoch_callback(epoch, val_loss, best_val_loss) -> bool: called after
+      every epoch (1-based epoch); returning True stops training (pruning).
+    - early_stop_patience: stop after this many epochs without improvement
+      (default config['early_stop_patience'], None = disabled).
+    - save_periodic: write ealstm_epoch_N.pt every save_weights_every epochs.
+    - wandb_prefix: when set (e.g. 'fold_2/'), metrics are logged as
+      '{prefix}train_loss' / '{prefix}val_loss' / '{prefix}epoch' without a
+      global step, so several models (CV folds) can log into one run.
+    - write_summary: when False, the run summary (best_val_loss/best_epoch)
+      is left to the caller.
+
+    Returns {'best_val_loss', 'best_epoch', 'exp_dir', 'train_loss_history',
+    'val_loss_history'} (best_val_loss is None in final CV training).
+    """
+    final_cv_training = bool((config.get('cross_validation') or {}).get('enabled', False))
 
     set_seed(config.get('seed', 42))
-    
+
     device_str = config.get('device', 'cpu')
     device = torch.device(device_str if torch.cuda.is_available() or device_str == 'cpu' else 'cpu')
     print(f"[INFO] Execution target hardware configured to: {device}")
+
+    if exp_dir is None:
+        exp_dir = os.path.join(config.get('run_dir', './runs/'), config['experiment_name'])
+    os.makedirs(exp_dir, exist_ok=True)
+    # Preserve an exact copy of the config that produced this run, so it's never
+    # ambiguous later which settings a given checkpoint came from.
+    _write_run_config(config, config_path, exp_dir)
+
+    # Step 1: Normalization statistics - computed from train_periods ONLY, for
+    # every train/val/test basin, attached to config (so every loader below
+    # z-scores with them) and persisted to exp_dir/normalization_stats.json.
+    normalization_stats = prepare_normalization(config, exp_dir)
 
     # Read the spatial split flag directly from the configuration file (default to True if missing)
     use_spatial = config.get('use_basin_splits', True)
@@ -200,35 +284,24 @@ def main(config_path="configs/config.yml"):
 
     # Step 2: Initialize Data Pipeline Loaders
     print("[INFO] Constructing dataset pipelines and dataloaders...")
-
-    cv_config = config.get('cross_validation', {}) or {}
-    cv_enabled = cv_config.get('enabled', False)
-
-    if cv_enabled:
-        num_folds = len(cv_config['groups'])
-        training_rep = cv_config['training_rep']
-        if num_folds < 2:
-            raise ValueError(f"cross_validation.groups must contain at least 2 groups, got {num_folds}.")
-        if training_rep < 1:
-            raise ValueError(f"cross_validation.training_rep must be >= 1, got {training_rep}.")
-        epochs = num_folds * training_rep
-        print(f"[INFO] Cross-validation enabled: {num_folds} groups x training_rep={training_rep} "
-              f"-> {epochs} epochs (config['epochs'] ignored).")
-        fixed_train_datasets, group_datasets = build_cv_group_datasets(config, use_basin_splits=use_spatial)
-        train_loader, val_loader = None, None
+    epochs = config.get('epochs', 30)
+    train_loader = get_dataloader(split_type='train', config=config, use_basin_splits=use_spatial)
+    if final_cv_training:
+        # Final CV model: all of train_periods, no validation (see docstring)
+        print(f"[INFO] cross_validation.enabled: final training from scratch on all train_periods "
+              f"for {epochs} epochs, no validation set.")
+        val_loader = None
     else:
-        epochs = config.get('epochs', 30)
-        train_loader = get_dataloader(split_type='train', config=config, use_basin_splits=use_spatial)
         val_loader = get_dataloader(split_type='val', config=config, use_basin_splits=use_spatial)
 
     # Step 3: Construct Architecture and Optimization Engines
     print("[INFO] Instantiating EA-LSTM model architecture dynamically...")
     model = EALSTMModel(config).to(device)
-    
+
     loss_setting = config.get('loss', 'MSE')
     criterion = get_loss_criterion(loss_setting, config)
     print(f"[INFO] Optimization criterion set to: {loss_setting}")
-    
+
     initial_lr = float(config['learning_rate'])
     optimizer = get_optimizer(config, model, initial_lr)
 
@@ -243,20 +316,11 @@ def main(config_path="configs/config.yml"):
         model.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         start_epoch = checkpoint.get('epoch', 0)
-        print(f"[INFO] Resumed after epoch {start_epoch}. Re-validating to establish best_val_loss baseline...")
+        print(f"[INFO] Resumed after epoch {start_epoch}.")
 
-    run_dir = config.get('run_dir', './runs/')
-    exp_dir = os.path.join(run_dir, config['experiment_name'])
-    os.makedirs(exp_dir, exist_ok=True)
-
-    # Preserve an exact copy of the config that produced this run, so it's never
-    # ambiguous later which settings a given checkpoint came from.
-    saved_config_path = os.path.join(exp_dir, "config.yml")
-    if os.path.abspath(config_path) != os.path.abspath(saved_config_path):
-        shutil.copy(config_path, saved_config_path)
-
-    use_wandb = config.get('use_wandb', False)
-    if use_wandb:
+    if use_wandb is None:
+        use_wandb = config.get('use_wandb', False)
+    if use_wandb and init_wandb:
         api_key = config.get('wandb_api_key')
         if api_key:
             wandb.login(key=api_key)
@@ -266,18 +330,19 @@ def main(config_path="configs/config.yml"):
             config=get_tracked_hparams(config),
         )
 
+    if early_stop_patience is None:
+        early_stop_patience = config.get('early_stop_patience')
+
     # Trackers for saving checkpoints and plotting history
-    if start_epoch > 0:
-        if cv_enabled:
-            resume_fold = start_epoch // training_rep
-            train_loader, val_loader = get_cv_fold_dataloaders(
-                fixed_train_datasets, group_datasets, resume_fold, config)
+    if start_epoch > 0 and val_loader is not None:
         best_val_loss = validate_epoch(model, val_loader, criterion, device, config)
+        best_epoch = start_epoch
     else:
         best_val_loss = float('inf')
+        best_epoch = None
+    epochs_no_improve = 0
     train_loss_history = []
     val_loss_history = []
-    fold_val_losses = []
 
     # Step 4: Core Training and Validation Loop Execution
     if start_epoch >= epochs:
@@ -286,121 +351,113 @@ def main(config_path="configs/config.yml"):
         print(f"[INFO] Initiating optimization loop for epochs {start_epoch + 1}-{epochs}.\n")
 
     for epoch in range(start_epoch, epochs):
-        if cv_enabled:
-            fold = epoch // training_rep
-            train_loader, val_loader = get_cv_fold_dataloaders(
-                fixed_train_datasets, group_datasets, fold, config)
-
         # Part A: Execute Training Cycle
         train_loss = train_epoch(model, train_loader, optimizer, criterion, device, config)
-        
-        # Part B: Execute Validation Cycle
-        val_loss = validate_epoch(model, val_loader, criterion, device, config)
-        
-        # If RMSE is selected, calculate the physical square root error 
+
+        # Part B: Execute Validation Cycle (none in final CV training)
+        val_loss = validate_epoch(model, val_loader, criterion, device, config) if val_loader is not None else None
+
+        # If RMSE is selected, calculate the physical square root error
         if loss_setting.upper() == 'RMSE':
             train_loss = torch.sqrt(torch.tensor(train_loss)).item()
-            val_loss = torch.sqrt(torch.tensor(val_loss)).item()
+            if val_loss is not None:
+                val_loss = torch.sqrt(torch.tensor(val_loss)).item()
             metric_label = "RMSE"
         else:
             metric_label = "Loss"
-            
+
         # Append to history trackers for downstream plotting
         train_loss_history.append(train_loss)
-        val_loss_history.append(val_loss)
-        
-        print(f"Epoch [{epoch+1}/{epochs}] Completed:")
+        if val_loss is not None:
+            val_loss_history.append(val_loss)
+
+        print(f"{wandb_prefix}Epoch [{epoch+1}/{epochs}] Completed:")
         print(f"  -> Train {metric_label}: {train_loss:.5f}")
-        print(f"  -> Val {metric_label}:   {val_loss:.5f}")
+        if val_loss is not None:
+            print(f"  -> Val {metric_label}:   {val_loss:.5f}")
+
+        if use_wandb:
+            metrics = {'train_loss': train_loss, 'learning_rate': optimizer.param_groups[0]['lr']}
+            if val_loss is not None:
+                metrics['val_loss'] = val_loss
+            if wandb_prefix:
+                # Several models (CV folds) share one run: no global step, each
+                # fold's curves are plotted against its own '{prefix}epoch'.
+                metrics['epoch'] = epoch + 1
+                wandb.log({f'{wandb_prefix}{k}': v for k, v in metrics.items()})
+            else:
+                wandb.log(metrics, step=epoch + 1)
 
         # Part C: Strategic Model Selection (Save Best Weights)
-        if cv_enabled:
-            # Fold is now the outer loop (training_rep consecutive epochs per
-            # fold, then switch) - a full rotation through all folds only
-            # completes once, at the very end of the run, so scoring/
-            # checkpointing happens exactly once there instead of every
-            # num_folds epochs. Each fold's representative score is its last
-            # (most-adapted) epoch's val_loss, captured at that fold's block
-            # boundary - one number per fold, same role a single epoch's
-            # val_loss played per fold under the old per-epoch rotation.
-            if use_wandb:
-                wandb.log({
-                    'train_loss': train_loss,
-                    'epoch_val_loss': val_loss,
-                    'learning_rate': optimizer.param_groups[0]['lr'],
-                    'cv/held_out_group': fold + 1,
-                }, step=epoch + 1)
-
-            if (epoch + 1) % training_rep == 0:
-                fold_val_losses.append(val_loss)
-
-            if epoch == epochs - 1:
-                mean_val_loss = sum(fold_val_losses) / len(fold_val_losses)
-                fold_val_losses = []
-                print(f"  -> Mean Val {metric_label} across {num_folds} folds "
-                      f"(full rotation complete): {mean_val_loss:.5f}")
-
-                if use_wandb:
-                    wandb.log({'val_loss': mean_val_loss, 'cv/repetition': 1}, step=epoch + 1)
-
-                if mean_val_loss < best_val_loss:
-                    best_val_loss = mean_val_loss
-                    best_checkpoint_path = os.path.join(exp_dir, "best_model.pt")
-                    torch.save({
-                        'epoch': epoch + 1,
-                        'model_state_dict': model.state_dict(),
-                        'optimizer_state_dict': optimizer.state_dict(),
-                        'val_loss': mean_val_loss,
-                    }, best_checkpoint_path)
-                    print(f"Mean validation improvement detected. Saved as best_model.pt")
-                    if use_wandb:
-                        wandb.run.summary['best_val_loss'] = mean_val_loss
-                        wandb.run.summary['best_epoch'] = epoch + 1
+        if val_loss is None:
+            # Final CV training: no validation - keep the latest weights
+            best_epoch = epoch + 1
+            _save_checkpoint(os.path.join(exp_dir, "best_model.pt"), epoch + 1, model, optimizer,
+                             normalization_stats, val_loss=None)
+        elif val_loss < best_val_loss:
+            best_val_loss = val_loss
+            best_epoch = epoch + 1
+            epochs_no_improve = 0
+            _save_checkpoint(os.path.join(exp_dir, "best_model.pt"), epoch + 1, model, optimizer,
+                             normalization_stats, val_loss=val_loss)
+            print(f"Validation improvement detected. Saved as best_model.pt")
+            if use_wandb and write_summary:
+                wandb.run.summary['best_val_loss'] = val_loss
+                wandb.run.summary['best_epoch'] = epoch + 1
         else:
-            if use_wandb:
-                wandb.log({
-                    'train_loss': train_loss,
-                    'val_loss': val_loss,
-                    'learning_rate': optimizer.param_groups[0]['lr'],
-                }, step=epoch + 1)
+            epochs_no_improve += 1
 
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-                best_checkpoint_path = os.path.join(exp_dir, "best_model.pt")
-                torch.save({
-                    'epoch': epoch + 1,
-                    'model_state_dict': model.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'val_loss': val_loss,
-                }, best_checkpoint_path)
-                print(f"Validation improvement detected. Saved as best_model.pt")
-                if use_wandb:
-                    wandb.run.summary['best_val_loss'] = val_loss
-                    wandb.run.summary['best_epoch'] = epoch + 1
+        # Part D: Standard Periodic Backup
+        if save_periodic and (epoch + 1) % config.get('save_weights_every', 1) == 0:
+            _save_checkpoint(os.path.join(exp_dir, f"ealstm_epoch_{epoch+1}.pt"), epoch + 1, model, optimizer,
+                             normalization_stats, loss=train_loss)
 
-        # Part D: Standard Periodic Backup (every epoch, unaffected by CV)
-        if (epoch + 1) % config.get('save_weights_every', 1) == 0:
-            checkpoint_path = os.path.join(exp_dir, f"ealstm_epoch_{epoch+1}.pt")
-            torch.save({
-                'epoch': epoch + 1,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'loss': train_loss,
-            }, checkpoint_path)
+        # Part E: Stopping rules (early stop / external pruning, e.g. a sweep's early drop)
+        if val_loss is None:
+            continue
+        if early_stop_patience is not None and epochs_no_improve >= early_stop_patience:
+            print(f"[Early Stop] No val_loss improvement for {early_stop_patience} epochs. "
+                  f"Stopping at epoch {epoch + 1}.")
+            break
+        if epoch_callback is not None and epoch_callback(epoch + 1, val_loss, best_val_loss):
+            print(f"[INFO] Training stopped by epoch_callback at epoch {epoch + 1}.")
+            break
 
     # Step 5: Generate and export the history curves chart
     plot_training_curves(train_loss_history, val_loss_history, loss_setting, exp_dir)
 
-    if use_wandb:
+    if use_wandb and init_wandb:
         wandb.finish()
 
-    print(f"\n[INFO] Optimization sequence finished. Best Validation {loss_setting}: {best_val_loss:.5f}")
+    if final_cv_training:
+        best_val_loss = None
+        print(f"\n[INFO] Final cross-validation training finished after {best_epoch} epochs "
+              f"(last epoch saved as best_model.pt).")
+    else:
+        print(f"\n[INFO] Optimization sequence finished. Best Validation {loss_setting}: {best_val_loss:.5f}")
     print(f"[INFO] All outputs and checkpoints archived inside: {exp_dir}")
+    return {
+        'best_val_loss': best_val_loss,
+        'best_epoch': best_epoch,
+        'exp_dir': exp_dir,
+        'train_loss_history': train_loss_history,
+        'val_loss_history': val_loss_history,
+    }
+
+
+def main(config_path="configs/config.yml", epochs=None):
+    config = load_config(config_path)
+    if epochs is not None:
+        config['epochs'] = epochs
+    return run_training(config, config_path=config_path)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train the EA-LSTM flash flood model.")
     parser.add_argument("--config", type=str, default="configs/config.yml",
                          help="Path to the YAML config file for this run.")
+    parser.add_argument("--epochs", type=int, default=None,
+                         help="Override config['epochs']. For a cross_validation config this is the final "
+                              "training length - use the winning sweep trial's avg_best_epoch.")
     args = parser.parse_args()
-    main(args.config)
+    main(args.config, epochs=args.epochs)

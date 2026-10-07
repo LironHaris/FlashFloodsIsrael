@@ -116,14 +116,6 @@ def run_mse_analysis(config_path, split_type):
         raise ValueError("split_type must be either 'train' or 'test'")
     config = load_config(config_path)
 
-    cv_config = config.get('cross_validation', {}) or {}
-    if cv_config.get('enabled', False):
-        raise ValueError(
-            f"MSE_analysis_{split_type}.py does not support cross_validation-enabled configs: it "
-            "relies on IsraelBasinsDataset's sample_basin_mappings/sample_date_mappings, not present "
-            "on the CV fold path. Use a config with cross_validation.enabled: false."
-        )
-
     use_spatial = config.get('use_basin_splits', True)
     hydro_year_start_month = config.get('hydro_year_start_month', 10)
     top_n_basins = config.get('sanity_top_n_basins', 10)

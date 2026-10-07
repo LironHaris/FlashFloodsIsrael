@@ -28,11 +28,14 @@ def _read_basin_list(path):
 
 
 def load_target_basin_ids(config):
-    """Union of train/val/test basin lists, stripped of the 'il_' prefix
-    to match the raw water-authority data's plain numeric basin IDs."""
-    il_ids = (_read_basin_list(config['train_basin_file'])
-              | _read_basin_list(config['validation_basin_file'])
-              | _read_basin_list(config['test_basin_file']))
+    """Union of the train/test (and, if the config has one, validation) basin
+    lists, stripped of the 'il_' prefix to match the raw water-authority data's
+    plain numeric basin IDs."""
+    il_ids = set()
+    for key in ('train_basin_file', 'validation_basin_file', 'test_basin_file'):
+        path = config.get(key)
+        if path and os.path.exists(path):
+            il_ids |= _read_basin_list(path)
     return {il_id: il_id.replace('il_', '', 1) for il_id in il_ids}
 
 
@@ -142,6 +145,9 @@ def main(config):
 
 
 if __name__ == "__main__":
-    CONFIG_PATH = "configs/config.yml"
-    yaml_config = load_config(CONFIG_PATH)
-    main(yaml_config)
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", type=str, default="configs/preprocess.yml",
+                        help="Preprocessing config (default configs/preprocess.yml).")
+    args = parser.parse_args()
+    main(load_config(args.config))

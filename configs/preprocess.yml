@@ -1,0 +1,64 @@
+# Preprocessing configuration - independent of any model/training config.
+# Used by: preprocess_dynamic_data.py, preprocess_static_attributes.py,
+# flow_quality_check.py, screen_dry_years.py, nan_flow_days.py, basin_splits.py
+# (each takes --config, defaulting to this file).
+#
+# Preprocessing knows only two periods: TEST and NON-TEST. Everything outside
+# [test_start_date, test_end_date] up to record_end_date is the non-test pool
+# that training / cross-validation draw their train and validation years from.
+# The processed timeseries are written RAW (no normalization - see normalization.py).
+
+# --- Periods (format 'YYYY-MM-DD HH:MM:SS') ---
+test_start_date: '2016-10-01 08:00:00'
+test_end_date: '2019-09-30 07:00:00'
+# End of the processed record (each basin starts at its own first observation)
+record_end_date: '2023-09-30 07:00:00'
+hydro_year_start_month: 10 # October
+
+# --- Dynamic data ---
+raw_dynamic_dir: ./data/raw/dynamic
+processed_timeseries_dir: ./data/processed/timeseries
+availability_report_file: ./data/processed/data quality reports/data_availability_report.csv
+station_quality_file: ./data/processed/data quality reports/station quality.csv
+
+# Long-window cumulative (trailing rolling-sum) rain features, computed per basin on
+# raw hourly rain: value[t] = sum(hourly_precipitation[t-hours+1 : t+1]); any missing
+# hour inside the window yields NaN. Keep names in sync with the training configs'
+# dynamic_inputs (not auto-enforced).
+cumulative_rain_windows:
+  - name: rain_cum_1week
+    hours: 168
+  - name: rain_cum_4weeks
+    hours: 672
+  - name: rain_cum_8weeks
+    hours: 1344
+
+# Minimum % of hours where BOTH Flow_m3_sec and hourly_precipitation are non-NaN,
+# per period (non-test / test). A basin below it in both periods is excluded; otherwise
+# it is listed in israel_train.txt / israel_test.txt for the period(s) it passes.
+min_combined_availability_pct: 48
+
+# Flow NaN stretches longer than this many hours are dropped from the processed CSV
+seq_length: 72
+
+# --- Basin lists (written by basin_splits.py) ---
+train_basin_file: data/basin_lists/israel_train.txt
+test_basin_file: data/basin_lists/israel_test.txt
+
+# --- Data quality / screening outputs ---
+flow_quality_check_output_file: ./data/processed/data quality reports/flow_quality_check.csv
+dry_years_screening_summary_file: ./data/processed/data quality reports/dry_years_screening_summary.csv
+dry_years_water_authority_summary_file: ./data/processed/data quality reports/dry_years_water_authorty.csv
+nan_flow_days_output_dir: ./data/processed/data quality reports/nan_flow_days
+no_dry_years_timeseries_dir: ./data/processed/no_dry_years_timeseries
+no_dry_years_timeseries_water_authority_dir: ./data/processed/no_dry_years_timeseries_water_authority
+daily_flow_water_authority_dir: ./data/water authority/daily_flow_water_authority
+water_authority_analysis_output_file: ./data/processed/data quality reports/water_authority_data_analyze.csv
+water_authority_data_gap_file: ./data/processed/data quality reports/water_authority_data_gap.csv
+
+# --- Static attributes ---
+raw_static_dir: ./data/raw/static
+static_attributes_file: data/processed/static/static_attributes_nh.csv
+processed_static_dir: ./data/processed/static
+feature_stats_file: ./data/processed/static/feature_statistics.csv
+normalized_static_attributes_file: ./data/processed/static/static_attributes_normalized.csv

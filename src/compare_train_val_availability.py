@@ -6,8 +6,9 @@ Description: Compares the model_0 and model_1_3 "no dry years" config
              DataLoader - not raw non-NaN row counts) their train/val
              period definitions produce, per basin and per hydrological
              year, per forecast lead time. Reuses the real dataset classes
-             directly (IsraelBasinsDataset, build_cv_group_datasets) so the
-             counts are guaranteed to match real training exactly.
+             directly (IsraelBasinsDataset) so the counts are guaranteed to
+             match real training exactly. NOTE: the model_1_3 side relied on the
+             removed cross-validation pipeline and now raises NotImplementedError.
 """
 
 import csv
@@ -18,7 +19,7 @@ import yaml
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from dataset import IsraelBasinsDataset, build_cv_group_datasets
+from dataset import IsraelBasinsDataset
 from flow_quality_check import get_hydrological_year
 
 
@@ -79,15 +80,10 @@ def collect_model_1_3_counts(config):
     variant; val = every group's eval-tolerance variant (the fixed slice is
     never held out as validation, matching real training).
     """
-    hydro_start = config.get('hydro_year_start_month', 10)
-    use_basin_splits = config.get('use_basin_splits', True)
-    train_counts, val_counts = {}, {}
-    fixed_train_datasets, group_datasets = build_cv_group_datasets(config, use_basin_splits=use_basin_splits)
-    _tally_by_year(fixed_train_datasets, hydro_start, train_counts)
-    for group in group_datasets.values():
-        _tally_by_year(group['train'], hydro_start, train_counts)
-        _tally_by_year(group['val'], hydro_start, val_counts)
-    return train_counts, val_counts
+    raise NotImplementedError(
+        "Cross-validation was removed from the training pipeline (dataset.build_cv_group_datasets "
+        "no longer exists), so the model_1_3 cross-validation window counts can't be reproduced. "
+        "Only collect_model_0_counts remains available.")
 
 
 def _ratio_pct(numerator, denominator):

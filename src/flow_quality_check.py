@@ -54,13 +54,29 @@ def compute_basin_year_counts(df, start_month, count_suffix='hours', include_mis
     return counts
 
 
+def non_test_periods(config):
+    """
+    The non-test pool as (start, end) datetime strings: everything from each
+    basin's own first record (open start = None) up to the hour before
+    test_start_date, plus the hour after test_end_date through
+    config['record_end_date'] (when the record extends past the test period).
+    Preprocessing only distinguishes test vs non-test - training/CV configs
+    decide how the non-test years are used.
+    """
+    one_hour = pd.Timedelta(hours=1)
+    fmt = '%Y-%m-%d %H:%M:%S'
+    test_start, test_end = pd.Timestamp(config['test_start_date']), pd.Timestamp(config['test_end_date'])
+    periods = [(None, (test_start - one_hour).strftime(fmt))]
+    record_end = pd.Timestamp(config['record_end_date'])
+    if record_end > test_end:
+        periods.append(((test_end + one_hour).strftime(fmt), record_end.strftime(fmt)))
+    return periods
+
+
 def build_split_windows(config):
-    windows = []
-    for period in config['train_periods']:
-        start_ts = pd.Timestamp(period['start_date']) if period['start_date'] else pd.Timestamp.min
-        end_ts = pd.Timestamp(period['end_date']) if period['end_date'] else pd.Timestamp.max
-        windows.append(('train', start_ts, end_ts))
-    windows.append(('val', pd.Timestamp(config['validation_start_date']), pd.Timestamp(config['validation_end_date'])))
+    """('train', start, end) windows for the non-test pool + one ('test', ...) window."""
+    windows = [('train', pd.Timestamp(s) if s else pd.Timestamp.min, pd.Timestamp(e))
+               for s, e in non_test_periods(config)]
     windows.append(('test', pd.Timestamp(config['test_start_date']), pd.Timestamp(config['test_end_date'])))
     return windows
 
@@ -151,6 +167,9 @@ def main(config):
 
 
 if __name__ == "__main__":
-    CONFIG_PATH = "configs/config.yml"
-    yaml_config = load_config(CONFIG_PATH)
-    main(yaml_config)
+    import argparse
+    parser = argparse.ArgumentParser(description="Per-basin, per-hydro-year flow quality check.")
+    parser.add_argument("--config", type=str, default="configs/preprocess.yml",
+                        help="Preprocessing config (default configs/preprocess.yml).")
+    args = parser.parse_args()
+    main(load_config(args.config))

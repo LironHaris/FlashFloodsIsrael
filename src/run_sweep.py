@@ -5,33 +5,18 @@ Description: W&B sweep agent entry point for Bayesian hyperparameter tuning.
 Each call by the sweep agent runs one full training trial:
   1. wandb.init() picks up the trial's hyperparameters from the agent.
   2. Base config.yml is loaded and overridden with the swept values.
-  3. Training and validation loops run using shared functions from train.py.
-  4. Metrics are logged to the active W&B run; best checkpoint is saved.
+  3. train.run_training trains one model on the configured train/validation
+     split (normalization statistics computed fresh from train_periods for
+     this trial - no state shared between trials) and logs to this run.
+  4. The objective is 'val_loss' (logged every epoch; best value in the run
+     summary as 'best_val_loss'); best checkpoint is saved per trial.
 
-If the base config has cross_validation.enabled: true, each trial mirrors
-train.py's CV branch for data loading: total epochs = num_groups *
-training_rep, and fold = epoch // training_rep - i.e. fold is the outer
-loop (training_rep consecutive epochs on the same held-out fold, then
-switch), matching train.py. Every epoch rebuilds its train/val loaders for
-that epoch's held-out fold via dataset.py's build_cv_group_datasets/
-get_cv_fold_dataloaders. Scoring differs from train.py's non-CV path
-though: every fold's raw val_loss is logged each epoch (as
-'epoch_val_loss', for visibility), but the sweep's actual optimization
-target ('val_loss', matching sweep_adamw_cv.yaml's metric.name),
-best_model.pt checkpointing, early stopping, and early-drop all act only
-once, at the trial's very last epoch, comparing the mean of each fold's
-representative (last-epoch-of-its-block) val_loss - so one unusually hard
-fold can't dominate the comparison, and every fold contributes equally.
+Trials stop early on early_stop_patience (default 10) or, when early drop is
+enabled in the sweep YAML, at early_drop_epoch if the trial's best_val_loss
+is not in the top-k of the sweep's finished runs.
 
-Because fold is now the outer loop, a full rotation through all folds only
-completes once per trial (at the last epoch), so early_stop_patience and
-early_drop_epoch can no longer abandon a bad trial *before* it finishes -
-there is nothing to check until the trial is already done. Per-trial
-pruning before completion is therefore not available under CV anymore;
-keep CV sweep trials cheap instead by pointing FLASHFLOODS_CONFIG at a base
-config with a small training_rep (e.g. 2) for the sweep, and only use a
-larger training_rep (e.g. 10) for the final full training run of whichever
-config the sweep selects.
+For k-fold cross-validation configs (cross_validation.enabled: true) use
+cross_validation_sweep.py instead - this script rejects them.
 
 Usage:
   wandb sweep configs/sweep.yaml          # register sweep, prints SWEEP_ID
@@ -47,15 +32,12 @@ Usage:
 import os
 import sys
 import yaml
-import torch
 import wandb
 
 # Ensure src/ is on the path when called directly by the W&B agent
 sys.path.insert(0, os.path.dirname(__file__))
 
-from model import EALSTMModel
-from dataset import get_dataloader, build_cv_group_datasets, get_cv_fold_dataloaders
-from train import set_seed, train_epoch, validate_epoch, get_loss_criterion, get_tracked_hparams, get_optimizer
+from train import get_tracked_hparams, run_training
 
 
 def load_config(yaml_path):
@@ -63,15 +45,18 @@ def load_config(yaml_path):
         return yaml.safe_load(f)
 
 
-def is_below_top_k(project, sweep_id, current_run_id, best_val_loss_so_far, top_k):
+def is_below_top_k(project, sweep_id, current_run_id, best_val_loss_so_far, top_k,
+                   metric_key='best_val_loss'):
     """True if this run's best_val_loss isn't competitive with the top_k
-    best *finished* runs in the sweep so far. False if too few exist to compare."""
+    best *finished* runs in the sweep so far, compared on summary[metric_key]
+    (cross_validation_sweep.py compares a fold with the same fold of other
+    trials via metric_key='fold_{j}_best_val_loss'). False if too few exist to compare."""
     api = wandb.Api()
     sweep = api.sweep(f"{project}/{sweep_id}")
     finished_losses = sorted(
-        r.summary['best_val_loss']
+        r.summary[metric_key]
         for r in sweep.runs
-        if r.id != current_run_id and r.state == 'finished' and 'best_val_loss' in r.summary
+        if r.id != current_run_id and r.state == 'finished' and r.summary.get(metric_key) is not None
     )
     if len(finished_losses) < top_k:
         return False
@@ -102,147 +87,37 @@ def run_trial():
     # Load base config and apply swept hyperparameters
     config = base_config
     config.update(dict(wandb.config))
+    if (config.get('cross_validation') or {}).get('enabled', False):
+        raise ValueError("This base config has cross_validation.enabled - sweep it with "
+                         "cross_validation_sweep.py (configs/sweep_cv.yaml), not run_sweep.py.")
 
     # Push non-swept relevant hparams (epochs, forecast_lead_times, etc.) into the W&B run
     wandb.config.update(get_tracked_hparams(config))
 
-    set_seed(config.get('seed', 42))
-
-    device_str = config.get('device', 'cpu')
-    device = torch.device(device_str if torch.cuda.is_available() or device_str == 'cpu' else 'cpu')
-
     # Unique output directory per trial — prevents checkpoint collisions across parallel runs
     run_dir = config.get('run_dir', './runs/')
     exp_dir = os.path.join(run_dir, config['experiment_name'], wandb.run.id)
-    os.makedirs(exp_dir, exist_ok=True)
 
-    use_spatial = config.get('use_basin_splits', True)
+    def early_drop(epoch, val_loss, best_val_loss):
+        """Prune this trial at early_drop_epoch if it isn't in the sweep's top-k so far."""
+        if not early_drop_enabled or epoch != early_drop_epoch:
+            return False
+        if is_below_top_k(project, wandb.run.sweep_id, wandb.run.id, best_val_loss, early_drop_top_k):
+            print(f"[Early Drop] best_val_loss={best_val_loss:.4f} not in top {early_drop_top_k} "
+                  f"at epoch {epoch}. Abandoning this configuration.")
+            wandb.run.summary['early_dropped'] = True
+            return True
+        return False
 
-    cv_config = config.get('cross_validation', {}) or {}
-    cv_enabled = cv_config.get('enabled', False)
-
-    if cv_enabled:
-        num_folds = len(cv_config['groups'])
-        training_rep = cv_config['training_rep']
-        if num_folds < 2:
-            raise ValueError(f"cross_validation.groups must contain at least 2 groups, got {num_folds}.")
-        if training_rep < 1:
-            raise ValueError(f"cross_validation.training_rep must be >= 1, got {training_rep}.")
-        epochs = num_folds * training_rep
-        fixed_train_datasets, group_datasets = build_cv_group_datasets(config, use_basin_splits=use_spatial)
-        train_loader, val_loader = None, None
-    else:
-        epochs = config.get('epochs', 30)
-        train_loader = get_dataloader(split_type='train', config=config, use_basin_splits=use_spatial)
-        val_loader = get_dataloader(split_type='val', config=config, use_basin_splits=use_spatial)
-
-    model = EALSTMModel(config).to(device)
-
-    loss_setting = config.get('loss', 'MSE')
-    criterion = get_loss_criterion(loss_setting, config)
-
-    sweep_lr = float(config['learning_rate'])
-    optimizer = get_optimizer(config, model, sweep_lr)
-
-    best_val_loss = float('inf')
-    patience = config.get('early_stop_patience', 10)
-    epochs_no_improve = 0
-    fold_val_losses = []
-
-    for epoch in range(epochs):
-        if cv_enabled:
-            fold = epoch // training_rep
-            train_loader, val_loader = get_cv_fold_dataloaders(fixed_train_datasets, group_datasets, fold, config)
-
-        train_loss = train_epoch(model, train_loader, optimizer, criterion, device, config)
-        val_loss = validate_epoch(model, val_loader, criterion, device, config)
-
-        if cv_enabled:
-            # Fold is now the outer loop (training_rep consecutive epochs per
-            # fold, then switch) - a full rotation through all folds only
-            # completes once, at the very end of the trial, so
-            # score/checkpoint/early-stop/early-drop only ever fire there
-            # (see run_trial's docstring: per-trial pruning before
-            # completion no longer applies under CV - keep trials cheap by
-            # using a small training_rep for the sweep instead).
-            wandb.log({
-                'train_loss': train_loss,
-                'epoch_val_loss': val_loss,
-                'learning_rate': optimizer.param_groups[0]['lr'],
-                'cv/held_out_group': fold + 1,
-            }, step=epoch + 1)
-
-            if (epoch + 1) % training_rep == 0:
-                fold_val_losses.append(val_loss)
-
-            if epoch != epochs - 1:
-                continue
-
-            mean_val_loss = sum(fold_val_losses) / len(fold_val_losses)
-            repetition = 1
-            fold_val_losses = []
-
-            # 'val_loss' is the metric sweep_adamw_cv.yaml's Bayesian search
-            # reads (via W&B's summary-follows-last-log default) - reserved
-            # exclusively for this full-rotation-mean signal under CV.
-            wandb.log({'val_loss': mean_val_loss, 'cv/repetition': repetition}, step=epoch + 1)
-
-            if mean_val_loss < best_val_loss:
-                best_val_loss = mean_val_loss
-                epochs_no_improve = 0
-                torch.save({
-                    'epoch': epoch + 1,
-                    'model_state_dict': model.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'val_loss': mean_val_loss,
-                }, os.path.join(exp_dir, "best_model.pt"))
-                wandb.run.summary['best_val_loss'] = mean_val_loss
-                wandb.run.summary['best_epoch'] = epoch + 1
-            else:
-                epochs_no_improve += 1
-                if patience is not None and epochs_no_improve >= patience:
-                    print(f"[Early Stop] No mean val_loss improvement for {patience} repetitions. "
-                          f"Stopping after repetition {repetition}.")
-                    break
-
-            if early_drop_enabled and repetition == early_drop_epoch:
-                if is_below_top_k(project, wandb.run.sweep_id, wandb.run.id, best_val_loss, early_drop_top_k):
-                    print(f"[Early Drop] best_val_loss={best_val_loss:.4f} not in top {early_drop_top_k} "
-                          f"after repetition {repetition}. Abandoning this configuration.")
-                    wandb.run.summary['early_dropped'] = True
-                    break
-            continue
-
-        # --- non-CV path: per-epoch scoring, unchanged ---
-        wandb.log({
-            'train_loss': train_loss,
-            'val_loss': val_loss,
-            'learning_rate': optimizer.param_groups[0]['lr'],
-        }, step=epoch + 1)
-
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            epochs_no_improve = 0
-            torch.save({
-                'epoch': epoch + 1,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'val_loss': val_loss,
-            }, os.path.join(exp_dir, "best_model.pt"))
-            wandb.run.summary['best_val_loss'] = val_loss
-            wandb.run.summary['best_epoch'] = epoch + 1
-        else:
-            epochs_no_improve += 1
-            if patience is not None and epochs_no_improve >= patience:
-                print(f"[Early Stop] No val_loss improvement for {patience} epochs. Stopping at epoch {epoch + 1}.")
-                break
-
-        if early_drop_enabled and (epoch + 1) == early_drop_epoch:
-            if is_below_top_k(project, wandb.run.sweep_id, wandb.run.id, best_val_loss, early_drop_top_k):
-                print(f"[Early Drop] best_val_loss={best_val_loss:.4f} not in top {early_drop_top_k} "
-                      f"at epoch {epoch + 1}. Abandoning this configuration.")
-                wandb.run.summary['early_dropped'] = True
-                break
+    run_training(
+        config,
+        exp_dir=exp_dir,
+        use_wandb=True,
+        init_wandb=False,           # this agent owns the wandb run
+        epoch_callback=early_drop,
+        early_stop_patience=config.get('early_stop_patience', 10),
+        save_periodic=False,        # only best_model.pt per trial
+    )
 
     wandb.finish()
 

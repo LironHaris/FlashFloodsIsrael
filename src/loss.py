@@ -12,7 +12,7 @@ class NSELoss(nn.Module):
         """
         predictions : (B, lead_times)
         targets     : (B, lead_times)
-        basin_std   : (B,)  — per-sample flow std from the basin's full time series
+        basin_std   : (B,)  — per-sample flow std from the basin's train periods (normalization.py)
         """
         sq_err = (predictions - targets) ** 2           # (B, lead_times)
         denom = (basin_std.unsqueeze(1) + self.epsilon ) ** 2  # (B, 1) — broadcasts over lead dim

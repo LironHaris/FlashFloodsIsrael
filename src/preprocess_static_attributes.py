@@ -137,7 +137,9 @@ def main(config):
     print(f"Normalized static attributes saved to: {output_normalized}")
 
 if __name__ == "__main__":
-    CONFIG_PATH = "configs/config.yml"
-    
-    yaml_config = load_config(CONFIG_PATH)
-    main(yaml_config)
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", type=str, default="configs/preprocess.yml",
+                        help="Preprocessing config (default configs/preprocess.yml).")
+    args = parser.parse_args()
+    main(load_config(args.config))

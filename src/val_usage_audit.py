@@ -167,15 +167,6 @@ def log_usage_to_wandb(year_df, basin_df, key_prefix='usage_audit'):
 def run_usage_audit(config_path):
     config = load_config(config_path)
 
-    cv_config = config.get('cross_validation', {}) or {}
-    if cv_config.get('enabled', False):
-        raise ValueError(
-            "val_usage_audit.py does not support cross_validation-enabled configs: it relies "
-            "on dataset.get_dataloader(split_type='val')'s IsraelBasinsDataset "
-            "sample_basin_mappings/sample_date_mappings, not present on the CV fold path. "
-            "Use a config with cross_validation.enabled: false."
-        )
-
     use_spatial = config.get('use_basin_splits', True)
     val_loader = get_dataloader(split_type='val', config=config, use_basin_splits=use_spatial)
 
