@@ -243,6 +243,7 @@ radar_features:
 - radar_p90_mm
 - radar_wet_frac
 - radar_std_mm
+- radar_volume_m3
 static_source_dir: /sci/labs/efratmorin/liron.haris/FlashFloodsIsrael/data/processed/static
 static_extend_basins:
 - il_14115

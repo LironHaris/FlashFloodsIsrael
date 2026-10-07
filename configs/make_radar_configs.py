@@ -13,7 +13,8 @@ SCI = "/sci/labs/efratmorin"
 RADAR = f"{SCI}/ariel.monzon/SR_radar"
 EXTRACTION = f"{RADAR}/IMS_SR_adjusted_basin_hourly_v1"
 INPUTS = f"{EXTRACTION}/model_inputs_v1"
-RADAR_FEATURES = ["radar_mean_mm", "radar_max_mm", "radar_p90_mm", "radar_wet_frac", "radar_std_mm"]
+RADAR_FEATURES = ["radar_mean_mm", "radar_max_mm", "radar_p90_mm", "radar_wet_frac", "radar_std_mm",
+                  "radar_volume_m3"]   # rain amount over the basin (m3/h), from extraction v2 on
 
 COMMON = {
     # --- data ---
