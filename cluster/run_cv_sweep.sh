@@ -3,9 +3,9 @@
 #SBATCH --output=/sci/labs/efratmorin/liron.haris/FlashFloodsIsrael/runs/cv_sweep_%j.out
 #SBATCH --error=/sci/labs/efratmorin/liron.haris/FlashFloodsIsrael/runs/cv_sweep_%j.err
 #SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=32G
-#SBATCH --time=24:00:00
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=16G
+#SBATCH --time=72:00:00
 
 # 1. ����� �-Conda �� ������ ������ ������
 source /sci/labs/efratmorin/liron.haris/miniconda3/etc/profile.d/conda.sh
