@@ -24,7 +24,7 @@ cd /sci/labs/efratmorin/liron.haris/FlashFloodsIsrael
 # whichever file SWEEP_ID was actually registered from).
 SWEEP_ID="${1:?Usage: sbatch run_cv_sweep.sh <sweep_id> [config_path] [sweep_config_path]}"
 export FLASHFLOODS_CONFIG="${2:?a cross_validation config is required, e.g. configs/cross_val_0_3.yml}"
-export FLASHFLOODS_SWEEP_CONFIG="${3:-configs/sweep_cv.yaml}"
+export FLASHFLOODS_SWEEP_CONFIG="${3:-configs/sweep_crossval.yaml}"
 
 # 4b. Authenticate via WANDB_API_KEY (env var) instead of ~/.netrc - dozens of
 # these jobs can start within the same second, and concurrent `wandb` CLI

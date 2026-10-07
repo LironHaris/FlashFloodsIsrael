@@ -34,10 +34,10 @@ run_dir/experiment_name/<run_id>/: fold_{j}/ (best_model.pt, normalization
 stats, config) and cv_summary.json.
 
 Usage:
-  wandb sweep configs/sweep_cv.yaml                       # register sweep, prints SWEEP_ID
+  wandb sweep configs/sweep_crossval.yaml                       # register sweep, prints SWEEP_ID
   FLASHFLOODS_CONFIG=configs/cross_val_0_3.yml \\
-  FLASHFLOODS_SWEEP_CONFIG=configs/sweep_cv.yaml wandb agent <SWEEP_ID>
-  (on the cluster: sbatch cluster/run_cv_sweep.sh <SWEEP_ID> <config> configs/sweep_cv.yaml)
+  FLASHFLOODS_SWEEP_CONFIG=configs/sweep_crossval.yaml wandb agent <SWEEP_ID>
+  (on the cluster: sbatch cluster/run_cv_sweep.sh <SWEEP_ID> <config> configs/sweep_crossval.yaml)
 """
 
 import json
@@ -66,7 +66,7 @@ def run_cv_trial():
     # wandb.config, the base config / sweep YAML paths via environment variables.
     base_config_path = os.environ.get('FLASHFLOODS_CONFIG', 'configs/config.yml')
     base_config = load_config(base_config_path)
-    sweep_config_path = os.environ.get('FLASHFLOODS_SWEEP_CONFIG', 'configs/sweep_cv.yaml')
+    sweep_config_path = os.environ.get('FLASHFLOODS_SWEEP_CONFIG', 'configs/sweep_crossval.yaml')
     sweep_config = load_config(sweep_config_path)
 
     api_key = base_config.get('wandb_api_key')

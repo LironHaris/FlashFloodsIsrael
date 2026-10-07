@@ -89,7 +89,7 @@ def run_trial():
     config.update(dict(wandb.config))
     if (config.get('cross_validation') or {}).get('enabled', False):
         raise ValueError("This base config has cross_validation.enabled - sweep it with "
-                         "cross_validation_sweep.py (configs/sweep_cv.yaml), not run_sweep.py.")
+                         "cross_validation_sweep.py (configs/sweep_crossval.yaml), not run_sweep.py.")
 
     # Push non-swept relevant hparams (epochs, forecast_lead_times, etc.) into the W&B run
     wandb.config.update(get_tracked_hparams(config))

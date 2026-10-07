@@ -37,7 +37,7 @@ test_start_date: '2016-10-01 08:00:00'
 test_end_date: '2019-09-30 07:00:00'
 
 # k-fold cross-validation over hydrological-year groups (hydro-year N = Oct N-1 .. Sep N).
-# - Hyperparameter search (cross_validation_sweep.py, configs/sweep_cv.yaml): fold j holds
+# - Hyperparameter search (cross_validation_sweep.py, configs/sweep_crossval.yaml): fold j holds
 #   out groups[j] as validation and trains on the rest of train_periods (years in no group,
 #   e.g. before 2009, are always trained on). Each fold is an independent model with its own
 #   normalization statistics and early stopping; the trial's score is the mean of the folds'
