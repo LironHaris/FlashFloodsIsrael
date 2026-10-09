@@ -29,4 +29,10 @@ mkdir -p runs
 
 # 6. ����� ����� �� ������
 CONFIG_PATH="${1:-configs/config.yml}"
-python src/train.py --config "$CONFIG_PATH"
+# Optional 2nd arg: epochs override, e.g. a CV config's avg_best_epoch for the final training
+EPOCHS="${2:-}"
+if [ -n "$EPOCHS" ]; then
+    python src/train.py --config "$CONFIG_PATH" --epochs "$EPOCHS"
+else
+    python src/train.py --config "$CONFIG_PATH"
+fi

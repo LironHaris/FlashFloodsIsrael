@@ -38,8 +38,15 @@ Usage:
   FLASHFLOODS_CONFIG=configs/cross_val_0_3.yml \\
   FLASHFLOODS_SWEEP_CONFIG=configs/sweep_crossval.yaml wandb agent <SWEEP_ID>
   (on the cluster: sbatch cluster/run_cv_sweep.sh <SWEEP_ID> <config> configs/sweep_crossval.yaml)
+
+Standalone mode (no sweep): run the k folds with a config's own fixed
+hyperparameters, early drop off - e.g. to re-estimate avg_best_epoch over a full
+epoch budget (configs/cv_epochs_0_*.yml set early_stop_patience empty = disabled):
+  python src/cross_validation_sweep.py --config configs/cv_epochs_0_3.yml [--epochs N]
+  (on the cluster: sbatch cluster/run_cv_epochs.sh configs/cv_epochs_0_3.yml)
 """
 
+import argparse
 import json
 import os
 import sys
@@ -61,28 +68,47 @@ def load_config(yaml_path):
         return yaml.safe_load(f)
 
 
-def run_cv_trial():
-    # Same agent conventions as run_sweep.py: hyperparameters arrive via
-    # wandb.config, the base config / sweep YAML paths via environment variables.
-    base_config_path = os.environ.get('FLASHFLOODS_CONFIG', 'configs/config.yml')
-    base_config = load_config(base_config_path)
-    sweep_config_path = os.environ.get('FLASHFLOODS_SWEEP_CONFIG', 'configs/sweep_crossval.yaml')
-    sweep_config = load_config(sweep_config_path)
+def run_cv_trial(config_path=None, epochs=None):
+    """
+    config_path None: sweep-agent trial (hyperparameters from wandb.config,
+    early drop from the sweep YAML). config_path given: standalone CV run of
+    that config's fixed hyperparameters - no sweep, no early drop.
+    epochs overrides config['epochs'].
+    """
+    if config_path is None:
+        # Same agent conventions as run_sweep.py: hyperparameters arrive via
+        # wandb.config, the base config / sweep YAML paths via environment variables.
+        base_config_path = os.environ.get('FLASHFLOODS_CONFIG', 'configs/config.yml')
+        base_config = load_config(base_config_path)
+        sweep_config_path = os.environ.get('FLASHFLOODS_SWEEP_CONFIG', 'configs/sweep_crossval.yaml')
+        sweep_config = load_config(sweep_config_path)
 
-    api_key = base_config.get('wandb_api_key')
-    if api_key:
-        wandb.login(key=api_key)
+        api_key = base_config.get('wandb_api_key')
+        if api_key:
+            wandb.login(key=api_key)
 
-    project = sweep_config.get('project')
-    wandb.init(project=project)
+        project = sweep_config.get('project')
+        wandb.init(project=project)
 
-    early_drop_enabled = sweep_config.get('early_drop_enabled', False)
-    early_drop_top_k = sweep_config.get('early_drop_top_k')
-    early_drop_epoch = sweep_config.get('early_drop_epoch')
+        early_drop_enabled = sweep_config.get('early_drop_enabled', False)
+        early_drop_top_k = sweep_config.get('early_drop_top_k')
+        early_drop_epoch = sweep_config.get('early_drop_epoch')
 
-    # Load base config and apply swept hyperparameters
-    config = base_config
-    config.update(dict(wandb.config))
+        # Load base config and apply swept hyperparameters
+        config = base_config
+        config.update(dict(wandb.config))
+    else:
+        base_config_path = config_path
+        config = load_config(config_path)
+        api_key = config.get('wandb_api_key')
+        if api_key:
+            wandb.login(key=api_key)
+        project = config.get('wandb_project', 'flash-floods-israel')
+        wandb.init(project=project, name=config['experiment_name'])
+        early_drop_enabled, early_drop_top_k, early_drop_epoch = False, None, None
+
+    if epochs is not None:
+        config['epochs'] = epochs
     if not (config.get('cross_validation') or {}).get('enabled', False):
         raise ValueError(f"{base_config_path} has no cross_validation.enabled: true - "
                          "use run_sweep.py for fixed train/validation configs.")
@@ -90,13 +116,15 @@ def run_cv_trial():
 
     fold_configs = build_fold_configs(config)
     num_folds = len(fold_configs)
+    # Missing key -> 10; an explicit empty 'early_stop_patience:' (None) disables early stopping
     patience = config.get('early_stop_patience', 10)
 
     run_dir = config.get('run_dir', './runs/')
     trial_dir = os.path.join(run_dir, config['experiment_name'], wandb.run.id)
     os.makedirs(trial_dir, exist_ok=True)
-    print(f"[INFO] Cross-validation trial {wandb.run.id}: {num_folds} folds, "
-          f"early_stop_patience={patience}, outputs in {trial_dir}")
+    patience_str = 'disabled' if patience is None else patience
+    print(f"[INFO] Cross-validation trial {wandb.run.id}: {num_folds} folds, {config.get('epochs')} epochs, "
+          f"early_stop_patience={patience_str}, outputs in {trial_dir}")
 
     fold_scores, fold_best_epochs = [], []
     dropped_at_fold = None
@@ -173,4 +201,12 @@ def run_cv_trial():
 
 
 if __name__ == "__main__":
-    run_cv_trial()
+    parser = argparse.ArgumentParser(description="Cross-validation trial: W&B sweep agent entry point, "
+                                                 "or a standalone run of one config with --config.")
+    parser.add_argument("--config", type=str, default=None,
+                        help="Standalone mode: run all folds with this config's fixed hyperparameters "
+                             "(no sweep, no early drop). Omit when launched by wandb agent.")
+    parser.add_argument("--epochs", type=int, default=None, help="Override config['epochs'].")
+    # parse_known_args: wandb agent appends the trial's hyperparameters as --key=value
+    args, _ = parser.parse_known_args()
+    run_cv_trial(config_path=args.config, epochs=args.epochs)
