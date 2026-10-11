@@ -52,7 +52,7 @@ def _read_basin_list(path):
 # buffer/merge windows, test window) - must be identical across every
 # compared model, or the comparison is apples-to-oranges.
 VALIDATE_IDENTICAL_KEYS = [
-    'test_start_date', 'test_end_date', 'prediction_threshold',
+    'test_start_date', 'test_end_date', 'test_periods', 'prediction_threshold',
     'return_periods_years', 'event_merge_gap_hours', 'visual_buffer_days',
     'hourly_flow_return_periods_combined',
 ]

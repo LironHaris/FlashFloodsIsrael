@@ -206,12 +206,15 @@ def _get_split_bounds_and_config(split_type, config, use_basin_splits):
         if split_type == 'val' and config.get('validation_periods'):
             # Explicit (possibly disjoint) validation periods, e.g. a CV fold's held-out years
             raw_periods = [(s, e) for s, e in config['validation_periods']]
+        elif split_type == 'test' and config.get('test_periods'):
+            # Explicit (possibly disjoint) test periods, e.g. non-consecutive test years
+            raw_periods = [(s, e) for s, e in config['test_periods']]
         elif f'{prefix}_start_date' in config and f'{prefix}_end_date' in config:
             raw_periods = [(config[f'{prefix}_start_date'], config[f'{prefix}_end_date'])]
         else:
             raise ValueError(
                 f"This config has no {prefix} split ({prefix}_start_date/{prefix}_end_date"
-                + (" or validation_periods" if split_type == 'val' else "") + " missing). "
+                + (" or validation_periods" if split_type == 'val' else " or test_periods") + " missing). "
                 "Cross-validation configs validate per fold - see cross_validation_sweep.py.")
 
         # Each period gets a seq_length warm-up buffer so its first hours can be targets
