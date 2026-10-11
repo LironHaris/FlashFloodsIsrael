@@ -228,8 +228,9 @@ def process_dynamic_data(config):
     All paths and parameters are drawn directly from the config.
     """
     # End of the processed record (preprocessing config's record_end_date - the
-    # end of the non-test pool, which can extend past the test period).
-    END_DATE = max(pd.to_datetime(config['record_end_date']), pd.to_datetime(config['test_end_date']))
+    # end of the non-test pool, which can extend past the test period(s)).
+    END_DATE = max(pd.to_datetime(config['record_end_date']),
+                   max(pd.to_datetime(e) for _, e in fqc.test_periods(config)))
     
     # Extract all paths from the configuration
     input_dir = config['raw_dynamic_dir']
@@ -277,15 +278,15 @@ def process_dynamic_data(config):
 
         # Step 3b: Exclude basins with no viable period at all - preprocessing only
         # distinguishes NON-TEST (the pool training/CV draw from; reported as
-        # combined_availability_pct_train) and TEST. A basin failing the combined
+        # combined_availability_pct_train) and TEST (test_start_date..test_end_date,
+        # or the union of test_periods). A basin failing the combined
         # (flow AND rain) availability threshold in both is dropped; one passing in
         # just one is still processed, and basin_splits.py lists it accordingly.
         # Checked before any further processing so excluded basins skip the rest of
         # the pipeline entirely and never get a processed timeseries CSV written -
         # dataset.py already treats a missing CSV as "basin not available."
         combined_train = combined_availability_for_periods(aligned_df, fqc.non_test_periods(config))
-        combined_test = combined_availability_for_periods(
-            aligned_df, [(config['test_start_date'], config['test_end_date'])])
+        combined_test = combined_availability_for_periods(aligned_df, fqc.test_periods(config))
 
         min_pct = config['min_combined_availability_pct']
         if combined_train < min_pct and combined_test < min_pct:
@@ -342,6 +343,7 @@ def process_dynamic_data(config):
     # combined_availability_pct - a basin may appear in multiple lists, or none.
     included_records = [r for r in availability_records if not r['excluded']]
     basin_lists_dir = os.path.dirname(config['train_basin_file'])
+    os.makedirs(basin_lists_dir, exist_ok=True)
     bs.create_basin_splits(included_records, basin_lists_dir, config['min_combined_availability_pct'])
 
     # Pass 2: screen out "dry" hydrological years (flagged as used-but-flow-free

@@ -15,4 +15,6 @@ export HOME=/sci/labs/efratmorin/liron.haris/
 cd /sci/labs/efratmorin/liron.haris/FlashFloodsIsrael
 
 # 3. הרצת סקריפט ה-Preprocess שלך
-python src/preprocess_dynamic_data.py --config configs/preprocess.yml
+# Optional 1st arg: preprocessing config, e.g. configs/preprocess_test_2009_2010_2011.yml
+CONFIG_PATH="${1:-configs/preprocess.yml}"
+python src/preprocess_dynamic_data.py --config "$CONFIG_PATH"

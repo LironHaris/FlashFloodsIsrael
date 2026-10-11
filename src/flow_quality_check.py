@@ -54,30 +54,48 @@ def compute_basin_year_counts(df, start_month, count_suffix='hours', include_mis
     return counts
 
 
+def test_periods(config):
+    """
+    The test split as a sorted list of (start, end) datetime strings:
+    config['test_periods'] (explicit, possibly disjoint - e.g. non-consecutive
+    test years) when set, else the single test_start_date..test_end_date range.
+    Same keys dataset.py reads for the test split.
+    """
+    if config.get('test_periods'):
+        periods = [(s, e) for s, e in config['test_periods']]
+    else:
+        periods = [(config['test_start_date'], config['test_end_date'])]
+    return sorted(periods, key=lambda p: pd.Timestamp(p[0]))
+
+
 def non_test_periods(config):
     """
     The non-test pool as (start, end) datetime strings: everything from each
-    basin's own first record (open start = None) up to the hour before
-    test_start_date, plus the hour after test_end_date through
-    config['record_end_date'] (when the record extends past the test period).
+    basin's own first record (open start = None) through
+    config['record_end_date'], minus the test period(s) - each piece ends the
+    hour before a test period starts / starts the hour after one ends.
     Preprocessing only distinguishes test vs non-test - training/CV configs
     decide how the non-test years are used.
     """
     one_hour = pd.Timedelta(hours=1)
     fmt = '%Y-%m-%d %H:%M:%S'
-    test_start, test_end = pd.Timestamp(config['test_start_date']), pd.Timestamp(config['test_end_date'])
-    periods = [(None, (test_start - one_hour).strftime(fmt))]
     record_end = pd.Timestamp(config['record_end_date'])
-    if record_end > test_end:
-        periods.append(((test_end + one_hour).strftime(fmt), record_end.strftime(fmt)))
+    periods = []
+    piece_start = None
+    for s, e in test_periods(config):
+        test_start, test_end = pd.Timestamp(s), pd.Timestamp(e)
+        periods.append((piece_start, (test_start - one_hour).strftime(fmt)))
+        piece_start = (test_end + one_hour).strftime(fmt)
+    if record_end > pd.Timestamp(piece_start) - one_hour:
+        periods.append((piece_start, record_end.strftime(fmt)))
     return periods
 
 
 def build_split_windows(config):
-    """('train', start, end) windows for the non-test pool + one ('test', ...) window."""
+    """('train', start, end) windows for the non-test pool + one ('test', ...) window per test period."""
     windows = [('train', pd.Timestamp(s) if s else pd.Timestamp.min, pd.Timestamp(e))
                for s, e in non_test_periods(config)]
-    windows.append(('test', pd.Timestamp(config['test_start_date']), pd.Timestamp(config['test_end_date'])))
+    windows += [('test', pd.Timestamp(s), pd.Timestamp(e)) for s, e in test_periods(config)]
     return windows
 
 
