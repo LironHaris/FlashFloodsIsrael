@@ -5,7 +5,7 @@
 #SBATCH --gres=gpu:1                    # שריון GPU אחד (גם אם ההרצה עצמה נעולה על CPU)
 #SBATCH --cpus-per-task=4              # 4 ליבות עבור טעינת נתונים ופלוטים
 #SBATCH --mem=16G                       # 16 ג'יגה זיכרון RAM
-#SBATCH --time=24:00:00                 # מגבלת זמן להרצה (ניתן לשנות לפי הצורך)
+#SBATCH --time=48:00:00                 # מגבלת זמן להרצה (ניתן לשנות לפי הצורך)
 
 # 1. טעינת ה-Conda environment
 source /sci/labs/efratmorin/liron.haris/miniconda3/etc/profile.d/conda.sh

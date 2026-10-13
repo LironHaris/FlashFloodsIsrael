@@ -1,8 +1,8 @@
 """
 Module: quick_test.py
 Description: Lightweight Evaluation Pipeline for an arbitrary checkpoint.
-             Like test.py, but loads weights from config['checkpoint_path'] instead of
-             run_dir/experiment_name/best_model.pt, and only produces the NSE empirical
+             Like test.py, but loads weights from config['checkpoint_path'] (falling back
+             to run_dir/experiment_name/best_model.pt when empty), and only produces the NSE empirical
              CDF (per lead time) and flood-event hydrographs - no summary tables and no
              full-test-period hydrographs.
 """
@@ -40,7 +40,9 @@ def load_config(yaml_path):
 def setup_evaluation_from_checkpoint(config):
     """
     Handles model reconstruction and loads weights from config['checkpoint_path'],
-    instead of test.py's fixed run_dir/experiment_name/best_model.pt location.
+    or - when it is empty (e.g. final cross-validation configs, where setting it
+    would make train.py resume instead of train from scratch) - from
+    run_dir/experiment_name/best_model.pt, same fallback as MSE_analysis.py.
     Uses config['device'] (falling back to CPU if CUDA isn't available), same
     convention as train.py.
     """
@@ -51,9 +53,9 @@ def setup_evaluation_from_checkpoint(config):
     print("[INFO] Reconstructing EA-LSTM architecture dynamically...")
     model = EALSTMModel(config).to(device)
 
-    checkpoint_path = config.get('checkpoint_path')
-    if not checkpoint_path:
-        raise ValueError("config['checkpoint_path'] must be set to use quick_test.py.")
+    run_dir = config.get('run_dir', './runs/')
+    exp_dir = os.path.join(run_dir, config['experiment_name'])
+    checkpoint_path = config.get('checkpoint_path') or os.path.join(exp_dir, "best_model.pt")
     if not os.path.exists(checkpoint_path):
         raise FileNotFoundError(f"checkpoint_path not found: {checkpoint_path}")
 
@@ -62,9 +64,6 @@ def setup_evaluation_from_checkpoint(config):
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()  # Lock dropout and state statistics
     print(f"[INFO] Model successfully deployed from checkpoint epoch {checkpoint.get('epoch', 'N/A')}")
-
-    run_dir = config.get('run_dir', './runs/')
-    exp_dir = os.path.join(run_dir, config['experiment_name'])
     return model, device, exp_dir
 
 

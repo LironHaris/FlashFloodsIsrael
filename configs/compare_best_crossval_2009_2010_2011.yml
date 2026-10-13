@@ -1,0 +1,27 @@
+# Compares the 8 final cross-validation models (model_0 and model_1_3, leads 0/3/6/12) on test hydro-years
+# 2009, 2010, 2011. All 8 share this test set's periods and basin list (configs/preprocess_test_2009_2010_2011.yml).
+# Run: python src/model_compare_test.py --config configs/compare_best_crossval_2009_2010_2011.yml
+#      then python src/model_compare_eval_test.py --config configs/compare_best_crossval_2009_2010_2011.yml
+comparison_name: best_crossval_test_2009_2010_2011
+run_dir: ./runs/model_comparisons/
+model_configs:
+- configs/best_crossval_0_0_2009_2010_2011.yml
+- configs/best_crossval_0_3_2009_2010_2011.yml
+- configs/best_crossval_0_6_2009_2010_2011.yml
+- configs/best_crossval_0_12_2009_2010_2011.yml
+- configs/best_crossval_1_3_0_2009_2010_2011.yml
+- configs/best_crossval_1_3_3_2009_2010_2011.yml
+- configs/best_crossval_1_3_6_2009_2010_2011.yml
+- configs/best_crossval_1_3_12_2009_2010_2011.yml
+model_labels:
+- best_crossval_0_0
+- best_crossval_0_3
+- best_crossval_0_6
+- best_crossval_0_12
+- best_crossval_1_3_0
+- best_crossval_1_3_3
+- best_crossval_1_3_6
+- best_crossval_1_3_12
+use_wandb: true
+wandb_project: flash-floods-israel
+wandb_api_key: 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
