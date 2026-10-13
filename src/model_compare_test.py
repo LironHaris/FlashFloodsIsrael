@@ -200,34 +200,43 @@ def evaluate_model_over_years(config, basins, periods):
     return exp_dir
 
 
+def report_nse(exp_dir, lead, basin):
+    """
+    One basin's NSE from a model's raw report (actual_lead_{lead}h vs
+    pred_lead_{lead}h from the same row - unaffected by the target-time shift
+    used elsewhere in this script, since both values already correspond to the
+    same target moment). None if the report or its columns are missing, or the
+    observed flow is constant (NSE undefined).
+    """
+    report_path = os.path.join(exp_dir, "visualization_reports", f"visual_report_basin_{basin}.csv")
+    if not os.path.exists(report_path):
+        return None
+    df = pd.read_csv(report_path)
+    actual_col = f"actual_lead_{lead}h"
+    pred_col = f"pred_lead_{lead}h"
+    if actual_col not in df.columns or pred_col not in df.columns:
+        return None
+    actuals_np = df[actual_col].to_numpy()
+    preds_np = df[pred_col].to_numpy()
+    ss_tot = float(np.sum((actuals_np - actuals_np.mean()) ** 2))
+    if ss_tot == 0:
+        return None
+    ss_res = float(np.sum((actuals_np - preds_np) ** 2))
+    return 1.0 - ss_res / ss_tot
+
+
 def compute_model_nse(model_configs, model_labels, model_leads, shared_basins):
     """
-    Per-model, per-basin NSE using that model's own raw report
-    (actual_lead_{lead}h vs pred_lead_{lead}h from the same row - unaffected
-    by the target-time shift used elsewhere in this script, since both
-    values already correspond to the same target moment). Returns
-    {label: [nse_per_basin...]}.
+    Per-model, per-basin NSE using that model's own raw report (see
+    report_nse). Returns {label: [nse_per_basin...]}.
     """
     model_nse = {label: [] for label in model_labels}
     for label, config in zip(model_labels, model_configs):
         exp_dir = os.path.join(config.get('run_dir', './runs/'), config['experiment_name'])
-        lead = model_leads[label]
         for basin in shared_basins:
-            report_path = os.path.join(exp_dir, "visualization_reports", f"visual_report_basin_{basin}.csv")
-            if not os.path.exists(report_path):
-                continue
-            df = pd.read_csv(report_path)
-            actual_col = f"actual_lead_{lead}h"
-            pred_col = f"pred_lead_{lead}h"
-            if actual_col not in df.columns or pred_col not in df.columns:
-                continue
-            actuals_np = df[actual_col].to_numpy()
-            preds_np = df[pred_col].to_numpy()
-            ss_tot = float(np.sum((actuals_np - actuals_np.mean()) ** 2))
-            if ss_tot == 0:
-                continue
-            ss_res = float(np.sum((actuals_np - preds_np) ** 2))
-            model_nse[label].append(1.0 - ss_res / ss_tot)
+            nse = report_nse(exp_dir, model_leads[label], basin)
+            if nse is not None:
+                model_nse[label].append(nse)
     return model_nse
 
 

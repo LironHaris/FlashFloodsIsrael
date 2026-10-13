@@ -1,0 +1,20 @@
+# NSE CDF of best_crossval_1_3_12 across its 5 test periods (same model setup and lead, each trained without
+# its own test years). Each curve is scored on that test set's own years and basin list.
+# Run: python src/NSE_CDF_compare_test_periods.py --config configs/NSE_CDF_compare_test_periods_1_3_12.yml
+comparison_name: NSE_CDF_compare_test_periods_1_3_12
+run_dir: ./runs/model_comparisons/
+model_configs:
+- configs/best_crossval_1_3_12_2009_2010_2011.yml
+- configs/best_crossval_1_3_12_2012_2013_2014.yml
+- configs/best_crossval_1_3_12_2015_2016_2020.yml
+- configs/best_crossval_1_3_12_2017_2018_2019.yml
+- configs/best_crossval_1_3_12_2021_2022_2023.yml
+model_labels:
+- test_2009_2011
+- test_2012_2014
+- test_2015_2016_2020
+- test_2017_2019
+- test_2021_2023
+use_wandb: true
+wandb_project: flash-floods-israel
+wandb_api_key: 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
