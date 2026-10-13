@@ -163,9 +163,12 @@ def run_mse_analysis(config_path, split_type):
         api_key = config.get('wandb_api_key')
         if api_key:
             wandb.login(key=api_key)
+        # MSE_{split}_ prefix keeps these analysis runs apart from the training run,
+        # which W&B names plain experiment_name (searching the name finds only training).
         wandb.init(
             project=config.get('wandb_project', 'flash-floods-israel'),
-            name=config['experiment_name'],
+            name=f"MSE_{split_type}_{config['experiment_name']}",
+            job_type=f'MSE_analysis_{split_type}',
         )
         wandb.log({
             f'{split_type}_loss': split_loss,

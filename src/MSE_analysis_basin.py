@@ -92,7 +92,7 @@ def run_basin_mse_analysis(config_path, basin_ids, top_n, use_wandb_override=Non
             wandb.login(key=api_key)
         wandb.init(
             project=config.get('wandb_project', 'flash-floods-israel'),
-            name=f"{config['experiment_name']}_basin_pies",
+            name=f"MSE_basin_{config['experiment_name']}",
             job_type='basin_mse_analysis',
             config={
                 'experiment_name': config['experiment_name'],
