@@ -59,12 +59,16 @@ def test_periods(config):
     The test split as a sorted list of (start, end) datetime strings:
     config['test_periods'] (explicit, possibly disjoint - e.g. non-consecutive
     test years) when set, else the single test_start_date..test_end_date range.
-    Same keys dataset.py reads for the test split.
+    Same keys dataset.py reads for the test split. A config with neither has no
+    test split (e.g. preprocess_all_data.yml): returns [] and the whole record
+    is non-test.
     """
     if config.get('test_periods'):
         periods = [(s, e) for s, e in config['test_periods']]
-    else:
+    elif config.get('test_start_date') and config.get('test_end_date'):
         periods = [(config['test_start_date'], config['test_end_date'])]
+    else:
+        return []
     return sorted(periods, key=lambda p: pd.Timestamp(p[0]))
 
 
@@ -86,7 +90,7 @@ def non_test_periods(config):
         test_start, test_end = pd.Timestamp(s), pd.Timestamp(e)
         periods.append((piece_start, (test_start - one_hour).strftime(fmt)))
         piece_start = (test_end + one_hour).strftime(fmt)
-    if record_end > pd.Timestamp(piece_start) - one_hour:
+    if piece_start is None or record_end > pd.Timestamp(piece_start) - one_hour:
         periods.append((piece_start, record_end.strftime(fmt)))
     return periods
 

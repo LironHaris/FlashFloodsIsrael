@@ -166,6 +166,8 @@ def combined_availability_for_periods(aligned_df, periods):
     combined availability separately per split (train/val/test), since a
     basin can be well-observed in one split and sparse in another.
     """
+    if not periods:  # e.g. no test split at all (preprocess_all_data.yml)
+        return 0.0
     slices = [aligned_df.loc[start:end] for start, end in periods]
     combined = pd.concat(slices)
     return analyze_combined_availability(combined) if not combined.empty else 0.0
@@ -229,8 +231,8 @@ def process_dynamic_data(config):
     """
     # End of the processed record (preprocessing config's record_end_date - the
     # end of the non-test pool, which can extend past the test period(s)).
-    END_DATE = max(pd.to_datetime(config['record_end_date']),
-                   max(pd.to_datetime(e) for _, e in fqc.test_periods(config)))
+    END_DATE = max([pd.to_datetime(config['record_end_date'])]
+                   + [pd.to_datetime(e) for _, e in fqc.test_periods(config)])
     
     # Extract all paths from the configuration
     input_dir = config['raw_dynamic_dir']
