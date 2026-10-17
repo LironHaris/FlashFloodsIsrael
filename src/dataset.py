@@ -15,6 +15,32 @@ import torch
 from torch.utils.data import Dataset, ConcatDataset, DataLoader
 
 from normalization import basin_stats
+from data_type_mask import flow_mask
+
+# (intervals_file, mask_name) -> {station_id: (starts, ends)}, loaded once per process
+_FLOW_TYPE_INTERVALS = {}
+
+
+def flow_type_intervals(intervals_file, mask_name, gauge_id):
+    """
+    Sorted, disjoint [start, end) datetime64 arrays of the hours the water
+    authority labeled with mask_name's Flow_types for this basin's station,
+    from build_flow_type_intervals.py's CSV. Empty arrays if the station has none.
+    """
+    key = (intervals_file, mask_name)
+    if key not in _FLOW_TYPE_INTERVALS:
+        if not os.path.exists(intervals_file):
+            raise FileNotFoundError(f"flow_type_intervals_file not found: {intervals_file} - "
+                                    "run src/build_flow_type_intervals.py first.")
+        df = pd.read_csv(intervals_file, dtype={'station_id': str}, parse_dates=['start', 'end'])
+        df = df[df['mask'] == mask_name].sort_values(['station_id', 'start'])
+        if df.empty:
+            raise ValueError(f"No '{mask_name}' intervals in {intervals_file}.")
+        _FLOW_TYPE_INTERVALS[key] = {sid: (g['start'].to_numpy(), g['end'].to_numpy())
+                                     for sid, g in df.groupby('station_id')}
+    empty = np.array([], dtype='datetime64[ns]')
+    return _FLOW_TYPE_INTERVALS[key].get(gauge_id.replace('il_', '', 1), (empty, empty))
+
 
 class SingleBasinDataset(Dataset):
     """
@@ -112,6 +138,20 @@ class SingleBasinDataset(Dataset):
                 for lead in self.forecast_lead_times
             )
         ]
+        self.num_unmasked_samples = len(self.valid_indices)
+
+        # Optional training-only Flow_type mask (config['train_flow_type_mask'], e.g.
+        # 'flow' / 'flow_normal'): keep a window only if the hour it predicts - at every
+        # forecast lead, the same hour __getitem__ reads - was labeled with that mask's
+        # Flow_types by the water authority. Inputs are not masked; val/test never are.
+        mask_name = config.get('train_flow_type_mask')
+        if split_type == 'train' and mask_name:
+            starts_iv, ends_iv = flow_type_intervals(config['flow_type_intervals_file'], mask_name, self.gauge_id)
+            in_type = flow_mask(self.dates.values, starts_iv, ends_iv)
+            self.valid_indices = [
+                i for i in self.valid_indices
+                if all(in_type[i + self.seq_length - 1 + lead] for lead in self.forecast_lead_times)
+            ]
         self.num_samples = len(self.valid_indices)
 
     def __len__(self):
@@ -334,6 +374,7 @@ def _build_basin_datasets(basin_ids, config, periods, split_type='train'):
     basin_datasets = []
     dynamic_feature_names = config['dynamic_inputs']
     target_col = config['target_variables'][0]
+    n_kept = n_unmasked = 0
 
     for basin_id in basin_ids:
         # Dynamic files are stored as [gauge_id].csv based on preprocessing script
@@ -351,10 +392,17 @@ def _build_basin_datasets(basin_ids, config, periods, split_type='train'):
                                            flow_std=stats[target_col]['std'],
                                            flow_mean=stats[target_col]['mean'], split_type=split_type,
                                            dyn_mean=dyn_mean, dyn_std=dyn_std)
+            n_kept += len(basin_ds)
+            n_unmasked += basin_ds.num_unmasked_samples
             if len(basin_ds) > 0:
                 basin_datasets.append(basin_ds)
         else:
             print(f"[Warning] Missing file paths for basin {basin_id} (Dynamic or Static data missing). Skipping.")
+
+    if split_type == 'train' and config.get('train_flow_type_mask'):
+        pct = 100.0 * n_kept / n_unmasked if n_unmasked else 0.0
+        print(f"[INFO] train_flow_type_mask='{config['train_flow_type_mask']}': kept {n_kept:,} of "
+              f"{n_unmasked:,} train samples ({pct:.1f}%) in {len(basin_datasets)} basins.")
 
     if len(basin_datasets) == 0:
         raise RuntimeError("No valid basin datasets were generated from the provided split list.")

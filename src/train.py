@@ -42,7 +42,7 @@ def get_tracked_hparams(config):
         'batch_size', 'epochs', 'seed',
         'target_noise_std', 'clip_gradient_norm',
         'seq_length', 'forecast_lead_times', 'use_basin_splits',
-        'optimizer', 'weight_decay',
+        'optimizer', 'weight_decay', 'train_flow_type_mask',
     ]
     tracked = {k: config[k] for k in keys if k in config}
     tracked['num_static_attributes'] = len(config.get('static_attributes', []))
