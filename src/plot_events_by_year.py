@@ -34,6 +34,7 @@ from model_compare_test import (
     evaluate_model_over_years, _cluster_hydro_year,
 )
 import find_flood_events as ffe
+import plot_hydrographs as ph
 
 
 def find_and_plot_events(model_configs, model_labels, model_leads, shared_basins, years, periods, output_dir,
@@ -150,7 +151,7 @@ def find_and_plot_events(model_configs, model_labels, model_leads, shared_basins
                 continue
 
             event_labels = {row['model_label']: row['label'] for row in window['rows']}
-            title = (f"Basin {basin} — Storm Event [{window['winning_label']}]\n"
+            title = (f"{ph.basin_title(basin, model_configs[0])} — Storm Event [{window['winning_label']}]\n"
                      f"Core: {window['core_start'].strftime('%Y-%m-%d %H:%M')} → "
                      f"{window['core_end'].strftime('%Y-%m-%d %H:%M')}")
             # Filename keyed by the event's own date, not a positional index -
@@ -163,7 +164,8 @@ def find_and_plot_events(model_configs, model_labels, model_leads, shared_basins
             fig = plot_hydrograph_comparison(window_df, model_labels, model_leads, model_color_map,
                                               title, output_dir, filename, event_labels=event_labels,
                                               hourly_xticks=True, xlim=(padded_start, padded_end),
-                                              shown_threshold_specs=shown_threshold_specs)
+                                              shown_threshold_specs=shown_threshold_specs,
+                                              core_window=(window['core_start'], window['core_end']))
             if use_wandb:
                 wandb.log({f"events_by_year/{basin}/{date_tag}": wandb.Image(fig)})
             plt.close(fig)

@@ -412,7 +412,7 @@ def plot_nse_cdf_comparison(model_nse, model_leads, comparison_config, output_di
 
 def plot_hydrograph_comparison(window_df, model_labels, model_leads, model_color_map, title,
                                 output_dir, filename, event_labels=None, hourly_xticks=False,
-                                xlim=None, shown_threshold_specs=None):
+                                xlim=None, shown_threshold_specs=None, core_window=None):
     """
     Fixed-size hydrograph: real flow (black) + one line per model's
     pred__{label} column (in its fixed color). window_df's 'timestamp'
@@ -432,6 +432,7 @@ def plot_hydrograph_comparison(window_df, model_labels, model_leads, model_color
     find_flood_events.normalize_threshold_specs) naming exactly which
     threshold bars to draw - replaces the old behavior of blanket-drawing
     every threshold_*yr_rp column found in window_df. None draws nothing.
+    core_window: optional (core_start, core_end) - shaded as the event's core.
     """
     fig, ax = plt.subplots(figsize=(12, 6.5), dpi=150, facecolor="#fafafa")
     ax.set_facecolor("#ffffff")
@@ -464,6 +465,9 @@ def plot_hydrograph_comparison(window_df, model_labels, model_leads, model_color
                    linestyle='-.', linewidth=2.0, alpha=1.0,
                    label=f'{label} ({thresh_series.iloc[0]:.1f} m³/s)')
 
+    if core_window is not None:
+        ph.shade_core_window(ax, *core_window)
+
     ax.set_title(title, fontsize=12, fontweight='bold', pad=15, color='#2c3e50')
     ax.set_xlabel('Time (target)', fontsize=10.5, labelpad=8)
     ax.set_ylabel('Discharge (m³/s)', fontsize=10.5, labelpad=8)
@@ -479,9 +483,7 @@ def plot_hydrograph_comparison(window_df, model_labels, model_leads, model_color
         ax.legend(loc='upper right', frameon=True, facecolor='#ffffff', edgecolor='#e2e2e2', fontsize=9)
 
     if hourly_xticks:
-        ax.xaxis.set_major_locator(mdates.HourLocator(interval=2))
-        ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %Hh'))
-        plt.setp(ax.get_xticklabels(), rotation=45, ha='right')
+        ph.format_event_time_axis(ax)
 
     fig.tight_layout()
 
@@ -494,7 +496,7 @@ def plot_hydrograph_comparison(window_df, model_labels, model_leads, model_color
 
 
 def plot_hydrograph_difference(window_df, model_labels, model_leads, model_color_map, title,
-                                output_dir, filename, hourly_xticks=False, xlim=None):
+                                output_dir, filename, hourly_xticks=False, xlim=None, core_window=None):
     """
     Fixed-size plot of observed-minus-predicted flow (actual_flow -
     pred__{label}) per model, to spot where/when predictions diverge most
@@ -502,6 +504,7 @@ def plot_hydrograph_difference(window_df, model_labels, model_leads, model_color
     overlay above for reference, same as plot_hydrograph_comparison. No
     threshold bars: the y-axis is a flow difference, not a flow value, so a
     threshold line wouldn't mean anything here.
+    core_window: optional (core_start, core_end) - shaded as the event's core.
     """
     fig, ax = plt.subplots(figsize=(12, 6.5), dpi=150, facecolor="#fafafa")
     ax.set_facecolor("#ffffff")
@@ -520,6 +523,9 @@ def plot_hydrograph_difference(window_df, model_labels, model_leads, model_color
                     color=model_color_map[label], linewidth=1.2, alpha=0.9,
                     label=f'{label} (+{lead}h) obs−pred')
 
+    if core_window is not None:
+        ph.shade_core_window(ax, *core_window)
+
     ax.set_title(title, fontsize=12, fontweight='bold', pad=15, color='#2c3e50')
     ax.set_xlabel('Time (target)', fontsize=10.5, labelpad=8)
     ax.set_ylabel('Observed − Predicted Discharge (m³/s)', fontsize=10.5, labelpad=8)
@@ -535,9 +541,7 @@ def plot_hydrograph_difference(window_df, model_labels, model_leads, model_color
         ax.legend(loc='upper right', frameon=True, facecolor='#ffffff', edgecolor='#e2e2e2', fontsize=9)
 
     if hourly_xticks:
-        ax.xaxis.set_major_locator(mdates.HourLocator(interval=2))
-        ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %Hh'))
-        plt.setp(ax.get_xticklabels(), rotation=45, ha='right')
+        ph.format_event_time_axis(ax)
 
     fig.tight_layout()
 
@@ -583,7 +587,7 @@ def plot_yearly_overview_hydrographs(model_configs, model_labels, model_leads, s
             if window_df.empty:
                 continue
 
-            title = (f"Basin {basin} — Hydrological Year {year}\n"
+            title = (f"{ph.basin_title(basin, model_configs[0])} — Hydrological Year {year}\n"
                       f"{year_start.date()} → {year_end.date()}")
             fig = plot_hydrograph_comparison(window_df, model_labels, model_leads, model_color_map,
                                               title, output_dir, f"hydrograph_{basin}_{year}_full.png",
@@ -593,7 +597,7 @@ def plot_yearly_overview_hydrographs(model_configs, model_labels, model_leads, s
                 wandb.log({f"yearly/{basin}/{year}/hydrograph": wandb.Image(fig)})
             plt.close(fig)
 
-            diff_title = (f"Basin {basin} — Observed minus Predicted, Hydrological Year {year}\n"
+            diff_title = (f"{ph.basin_title(basin, model_configs[0])} — Observed minus Predicted, Hydrological Year {year}\n"
                           f"{year_start.date()} → {year_end.date()}")
             diff_fig = plot_hydrograph_difference(window_df, model_labels, model_leads, model_color_map,
                                                    diff_title, output_dir, f"hydrograph_diff_{basin}_{year}.png",
@@ -762,14 +766,15 @@ def run_event_and_peaks_analysis(model_configs, model_labels, model_leads, share
                 continue
 
             event_labels = {row['model_label']: row['label'] for row in window['rows']}
-            title = (f"Basin {basin} — Model Comparison Storm Event [{window['winning_label']}]\n"
+            title = (f"{ph.basin_title(basin, model_configs[0])} — Model Comparison Storm Event [{window['winning_label']}]\n"
                      f"Core: {window['core_start'].strftime('%Y-%m-%d %H:%M')} → "
                      f"{window['core_end'].strftime('%Y-%m-%d %H:%M')}")
             filename = f"hydrograph_{basin}_event{idx}.png"
             fig = plot_hydrograph_comparison(window_df, model_labels, model_leads, model_color_map,
                                               title, output_dir, filename, event_labels=event_labels,
                                               hourly_xticks=True, xlim=(padded_start, padded_end),
-                                              shown_threshold_specs=shown_threshold_specs)
+                                              shown_threshold_specs=shown_threshold_specs,
+                                              core_window=(window['core_start'], window['core_end']))
             if use_wandb:
                 wandb.log({f"compare/flood_events/{basin}/event{idx}": wandb.Image(fig)})
             plt.close(fig)

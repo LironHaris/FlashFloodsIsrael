@@ -69,6 +69,55 @@ def _safe_xlim(start, end):
     return start, end
 
 
+# config-path tuple -> {gauge_id: name} / {gauge_id: area_km2}, read once per process
+_BASIN_NAMES = {}
+_BASIN_AREAS = {}
+BASIN_NAMES_FILE = 'attributes_other_il.csv'  # inside config['raw_static_dir'], has gauge_name
+
+
+def basin_title(basin_id, config):
+    """
+    'Basin il_31163 (DALIYOT - BET ZAYDA ROAD, 104.2 km²)' for hydrograph titles.
+    Name: gauge_name from raw_static_dir/attributes_other_il.csv. Area: the same
+    static_attributes_file area the specific-discharge (sq) thresholds use
+    (find_flood_events.load_basin_area_map). Either part is left out if missing.
+    """
+    names_path = os.path.join(config.get('raw_static_dir', ''), BASIN_NAMES_FILE)
+    if names_path not in _BASIN_NAMES:
+        _BASIN_NAMES[names_path] = {}
+        if os.path.exists(names_path):
+            names_df = pd.read_csv(names_path, usecols=['gauge_id', 'gauge_name'], dtype=str)
+            _BASIN_NAMES[names_path] = dict(zip(names_df['gauge_id'], names_df['gauge_name'].str.strip()))
+    area_path = config.get('static_attributes_file', '')
+    if area_path not in _BASIN_AREAS:
+        _BASIN_AREAS[area_path] = ffe.load_basin_area_map(config) if os.path.exists(area_path) else {}
+
+    name = _BASIN_NAMES[names_path].get(basin_id)
+    area = _BASIN_AREAS[area_path].get(basin_id)
+    parts = []
+    if isinstance(name, str) and name:
+        parts.append(name)
+    if area is not None and pd.notna(area):
+        parts.append(f"{float(area):.1f} km²")
+    return f"Basin {basin_id}" + (f" ({', '.join(parts)})" if parts else "")
+
+
+def format_event_time_axis(ax):
+    """Storm-window time axis: a labeled tick + gridline every 2 hours and an
+    unlabeled, lighter gridline at every hour in between."""
+    ax.xaxis.set_major_locator(mdates.HourLocator(interval=2))
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %Hh'))
+    ax.xaxis.set_minor_locator(mdates.HourLocator(interval=1))
+    ax.grid(True, which='minor', axis='x', linestyle=':', alpha=0.3, color='#b0b0b0')
+    plt.setp(ax.get_xticklabels(), rotation=45, ha='right')
+
+
+def shade_core_window(ax, core_start, core_end):
+    """Grey band behind the lines over the event's core window, with a legend entry."""
+    start, end = _safe_xlim(pd.to_datetime(core_start), pd.to_datetime(core_end))
+    ax.axvspan(start, end, color='#7f7f7f', alpha=0.25, zorder=0, linewidth=0, label='Core event window')
+
+
 def load_basin_rain_series(basin, config):
     """
     Physical (mm/h) hourly rain series for a basin, for use as a hydrograph
@@ -129,14 +178,16 @@ def add_rain_overlay(ax, timestamps, rain_values):
     return ax2
 
 
-def _build_hydrograph_figure(plot_df, title, config, hourly_xticks=False, xlim=None):
+def _build_hydrograph_figure(plot_df, title, config, hourly_xticks=False, xlim=None, core_window=None):
     """
     Shared Matplotlib figure builder for hydrograph functions.
     Fixed-size canvas (12 x 6.5 in @ 150 dpi).
     Threshold bars drawn are exactly config['shown_threshold_bars'] (falling
     back to return_periods_years if unset, matching pre-existing behavior for
     configs that don't set the new key) - see find_flood_events.normalize_threshold_specs.
-    hourly_xticks: if True, format the time axis with hourly ticks (storm windows).
+    hourly_xticks: if True, format the time axis for storm windows (labels every 2h,
+    gridline every hour - format_event_time_axis).
+    core_window: optional (core_start, core_end) - shaded as the event's core.
     xlim: optional (start, end) timestamps to fix the x-axis to explicitly.
     Without this, matplotlib autoscales the x-axis from the plotted data - which
     collapses to a degenerate (0, 1) numeric range when a window contains a
@@ -187,6 +238,9 @@ def _build_hydrograph_figure(plot_df, title, config, hourly_xticks=False, xlim=N
                            linestyle='-.', linewidth=2.2, alpha=1.0,
                            label=f'{label} ({thresh_val:.1f} m³/s)')
 
+    if core_window is not None:
+        shade_core_window(ax, *core_window)
+
     ax.set_title(title, fontsize=12, fontweight='bold', pad=15, color='#2c3e50')
     ax.set_xlabel('Time', fontsize=10.5, labelpad=8)
     ax.set_ylabel('Discharge (m³/s)', fontsize=10.5, labelpad=8)
@@ -202,9 +256,7 @@ def _build_hydrograph_figure(plot_df, title, config, hourly_xticks=False, xlim=N
         ax.legend(loc='upper right', frameon=True, facecolor='#ffffff', edgecolor='#e2e2e2', fontsize=9)
 
     if hourly_xticks:
-        ax.xaxis.set_major_locator(mdates.HourLocator(interval=2))
-        ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %Hh'))
-        plt.setp(ax.get_xticklabels(), rotation=45, ha='right')
+        format_event_time_axis(ax)
 
     fig.tight_layout()
     return fig
@@ -250,11 +302,11 @@ def plot_basin_storm_event(basin_id, start_window, end_window, config, label=Non
         print(f"[ERROR] No data in window for basin {basin_id}.")
         return None
 
-    title = (f"Basin {basin_id} — Storm Event" + (f" [{label}]" if label else "") + "\n"
+    title = (f"{basin_title(basin_id, config)} — Storm Event" + (f" [{label}]" if label else "") + "\n"
              f"Core: {core_start.strftime('%Y-%m-%d %H:%M')} → {core_end.strftime('%Y-%m-%d %H:%M')}")
 
     fig = _build_hydrograph_figure(plot_df, title, config, hourly_xticks=True,
-                                    xlim=(padded_start, padded_end))
+                                    xlim=(padded_start, padded_end), core_window=(core_start, core_end))
     if event_idx is not None and label is not None:
         filename = f"hydrograph_{basin_id}_event{event_idx}_{label}.png"
     else:
@@ -271,7 +323,7 @@ def plot_basin_full_history(basin, df, config):
     Accepts an in-memory DataFrame (as produced by build_and_export_report in test.py).
     Saves a PNG and returns the figure.
     """
-    title = f"Test Period — Basin {basin}"
+    title = f"Test Period — {basin_title(basin, config)}"
     fig = _build_hydrograph_figure(df, title, config)
     _save_figure(fig, _get_exp_dir(config), f"hydrograph_basin_{basin}_full.png")
     return fig

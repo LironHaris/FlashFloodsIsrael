@@ -1,0 +1,17 @@
+# One summary of the model_1_3 family (all its lead times x the 5 test periods) - src/summarize_family_test_periods.py:
+# event hydrographs per test period (that test set's leads only), an NSE CDF of all leads x test periods with
+# per-lead median curves, and the median over test periods of each event statistic per lead.
+# Reuses existing reports / NSE_CDF_compare_test_periods / model_compare_eval outputs where they exist.
+# Run: python src/summarize_family_test_periods.py --config configs/summarize_family_test_periods_model_1_3.yml
+summary_name: family_test_periods_model_1_3
+run_dir: ./runs/model_comparisons/
+models: ['1_3_0', '1_3_3', '1_3_6', '1_3_12']
+test_sets: ['2009_2010_2011', '2012_2013_2014', '2015_2016_2020', '2017_2018_2019', '2021_2022_2023']
+model_config_pattern: configs/best_crossval_{model}_{test}.yml
+# existing outputs to reuse (missing ones are simply recomputed)
+existing_compare_dir_pattern: ./runs/model_comparisons/best_crossval_test_{test}
+existing_compare_label_pattern: best_crossval_{model}
+existing_nse_dir_pattern: ./runs/model_comparisons/NSE_CDF_compare_test_periods_{model}
+use_wandb: true
+wandb_project: flash-floods-israel
+wandb_api_key: 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
