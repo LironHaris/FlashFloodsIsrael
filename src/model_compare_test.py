@@ -397,7 +397,7 @@ def plot_nse_cdf_comparison(model_nse, model_leads, comparison_config, output_di
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
     ax.grid(True, linestyle=':', alpha=0.5, color='#b0b0b0')
-    ax.legend(loc='lower right', frameon=True, facecolor='#ffffff', edgecolor='#e2e2e2', fontsize=9)
+    ph.place_legend_avoiding_lines(ax, frameon=True, facecolor='#ffffff', edgecolor='#e2e2e2', fontsize=9)
 
     fig.tight_layout()
 

@@ -63,6 +63,7 @@ except ImportError:
     WANDB_AVAILABLE = False
 
 import find_flood_events as ffe
+import plot_hydrographs as ph
 from model_compare_test import (load_config, _read_basin_list, run_single_model_eval, report_nse,
                                 run_event_and_peaks_analysis)
 from model_compare_eval_test import build_eval_summary
@@ -195,7 +196,7 @@ def plot_nse_cdf(nse_df, models, leads, summary_name, out_path):
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
     ax.grid(True, linestyle=':', alpha=0.5, color='#b0b0b0')
-    ax.legend(loc='upper left', frameon=True, facecolor='#ffffff', edgecolor='#e2e2e2', fontsize=8.5)
+    ph.place_legend_avoiding_lines(ax, frameon=True, facecolor='#ffffff', edgecolor='#e2e2e2', fontsize=8.5)
     fig.tight_layout()
     fig.savefig(out_path, facecolor=fig.get_facecolor())
     print(f"[INFO] Saved {out_path}")

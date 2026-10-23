@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -)",
+      "Bash(python -m py_compile src/plot_hydrographs.py src/model_compare_test.py src/summarize_family_test_periods.py)"
+    ]
+  }
+}

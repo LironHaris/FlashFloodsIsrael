@@ -112,6 +112,50 @@ def format_event_time_axis(ax):
     plt.setp(ax.get_xticklabels(), rotation=45, ha='right')
 
 
+# NSE CDF plots only: legend positions tried in order (bottom right first).
+NSE_CDF_LEGEND_LOCATIONS = ('lower right', 'upper left', 'lower left', 'upper right', 'center right', 'center left')
+
+
+def place_legend_avoiding_lines(ax, preferred=NSE_CDF_LEGEND_LOCATIONS, **legend_kwargs):
+    """
+    For the NSE CDF plots: legend at the first location in `preferred` (default
+    bottom right) whose box covers none of the plotted lines; if every location
+    covers some, the one covering the fewest. Lines are sampled every ~2 px on
+    screen (so a segment crossing the box counts even without a vertex inside
+    it), and only their visible part inside the axes is considered.
+    Returns the legend.
+    """
+    renderer = ax.figure.canvas.get_renderer()
+    axes_box = ax.get_window_extent(renderer)
+    samples = []
+    for line in ax.get_lines():
+        xy = np.asarray(line.get_xydata(), dtype=float)
+        if len(xy) == 0:
+            continue
+        pts = line.get_transform().transform(xy)
+        pts = pts[np.isfinite(pts).all(axis=1)]
+        if len(pts) == 1:
+            samples.append(pts)
+        for a, b in zip(pts[:-1], pts[1:]):
+            n = max(2, int(np.hypot(*(b - a)) / 2) + 1)
+            samples.append(a + np.linspace(0, 1, n)[:, None] * (b - a))
+    points = np.vstack(samples) if samples else np.empty((0, 2))
+    points = points[(points[:, 0] >= axes_box.x0) & (points[:, 0] <= axes_box.x1)
+                    & (points[:, 1] >= axes_box.y0) & (points[:, 1] <= axes_box.y1)]
+
+    best_loc, best_count = preferred[0], None
+    for loc in preferred:
+        legend = ax.legend(loc=loc, **legend_kwargs)
+        box = legend.get_window_extent(renderer)
+        count = int(((points[:, 0] >= box.x0) & (points[:, 0] <= box.x1)
+                     & (points[:, 1] >= box.y0) & (points[:, 1] <= box.y1)).sum())
+        if count == 0:
+            return legend
+        if best_count is None or count < best_count:
+            best_loc, best_count = loc, count
+    return ax.legend(loc=best_loc, **legend_kwargs)
+
+
 def shade_core_window(ax, core_start, core_end):
     """Grey band behind the lines over the event's core window, with a legend entry."""
     start, end = _safe_xlim(pd.to_datetime(core_start), pd.to_datetime(core_end))
@@ -357,7 +401,7 @@ def plot_nse_cdf(lead, nse_values, config):
     ax.set_xlim(0, max(1.0, max(values) + 0.05))
     ax.set_ylim(0, 1)
     ax.grid(True, linestyle=':', alpha=0.5, color='#b0b0b0')
-    ax.legend(loc='lower right', frameon=True, facecolor='#ffffff', edgecolor='#e2e2e2', fontsize=9)
+    place_legend_avoiding_lines(ax, frameon=True, facecolor='#ffffff', edgecolor='#e2e2e2', fontsize=9)
 
     fig.tight_layout()
     _save_figure(fig, _get_exp_dir(config), f"nse_cdf_lead_{lead}h.png")
