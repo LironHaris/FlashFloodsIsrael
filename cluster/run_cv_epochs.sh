@@ -18,6 +18,10 @@ conda activate flashfloods
 export MPLCONFIGDIR=/sci/labs/efratmorin/liron.haris/.matplotlib_cache
 export WANDB_CACHE_DIR=/sci/labs/efratmorin/liron.haris/wandb_cache
 export WANDB_CONFIG_DIR=/sci/labs/efratmorin/liron.haris/.config/wandb
+# No GUI backend: an ssh -X DISPLAY leaking into the job makes matplotlib use Tk, which
+# aborts with "Tcl_AsyncDelete: async handler deleted by the wrong thread" mid-training
+export MPLBACKEND=Agg
+unset DISPLAY
 
 # 3. Project directory
 cd /sci/labs/efratmorin/liron.haris/FlashFloodsIsrael
