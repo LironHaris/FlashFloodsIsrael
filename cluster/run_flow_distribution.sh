@@ -2,11 +2,12 @@
 #SBATCH --job-name=flow_distribution
 #SBATCH --output=/sci/labs/efratmorin/liron.haris/FlashFloodsIsrael/runs/logs_%x_%j.out
 #SBATCH --error=/sci/labs/efratmorin/liron.haris/FlashFloodsIsrael/runs/logs_%x_%j.err
+#SBATCH --gres=gpu:1                    # CPU-only run, but GPU partitions are the ones that accept the job (else BadConstraints)
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=24G
 #SBATCH --time=02:00:00
 
-# PDF/CDF of observed flow over flow / flow+normal timesteps (src/flow_distribution.py).
+# Normalized-flow and per-month histograms of flow / normal / other Flow_type timesteps (src/flow_distribution.py).
 # Needs the all-data preprocessing first:
 #   pid=$(sbatch --parsable cluster/run_preprocess_dynamic.sh configs/preprocess_all_data.yml)
 #   sbatch --dependency=afterok:$pid cluster/run_flow_distribution.sh configs/preprocess_all_data.yml
