@@ -1,8 +1,9 @@
 """
 Module: flow_distribution.py
-Description: Distribution of observed flow over basin-timestep pairs, restricted
-             to the hours the water authority labeled with a selected Flow_type
-             (data_type_mask.py's masks: 'flow', and 'flow' OR 'normal').
+Description: Distribution of observed flow over basin-timestep pairs, split by the
+             Flow_type the water authority labeled each hour with (data_type_mask.py's
+             intervals): 'flow' (blue), 'normal' (green) and everything else (red) -
+             any hour labeled neither, including hours with no label at all.
 
              Input: the ALL-DATA preprocessed timeseries (configs/preprocess_all_data.yml -
              no test split, the full preprocess_dynamic_data.py pipeline incl. dry-year
@@ -14,13 +15,12 @@ Description: Distribution of observed flow over basin-timestep pairs, restricted
              the whole record) - the model's per-basin target normalization, computed
              here in memory only, never written next to any training run.
 
-             Kept pairs: in-mask hours with non-NaN raw flow > 0 (zero flow excluded,
-             x range (0, max]); the same pairs are used for raw and normalized values.
-             Per mask x {raw m3/s, normalized}:
-               - PDF: histogram (y = number of pairs per flow bin), 200 equal-width bins
-               - CDF: exact cumulative count (y = number of pairs with flow <= x)
-             each with a linear-y and a log-y figure, plus a histogram CSV and a
-             summary.csv; everything is also logged to one W&B run
+             Kept pairs: non-NaN raw flow > 0 (zero flow excluded). Two figures, log-y,
+             the three categories overlaid:
+               - normalized_flow_hist.png: y = number of pairs per normalized-flow bin
+                 (200 equal-width bins shared by all categories)
+               - month_hist.png: y = number of pairs per calendar month, Oct..Sep
+             plus their CSVs and a summary.csv; everything is also logged to one W&B run
              (flow_distribution_all_data) when use_wandb is set.
 
 Usage:
@@ -40,9 +40,13 @@ import yaml
 from data_type_mask import UNIFIED_FILE, load_unified, build_flow_intervals, flow_mask
 from normalization import compute_basin_stats
 
-MASKS = {'flow': {'flow'}, 'flow_normal': {'flow', 'normal'}}
+# labeled categories; 'other' = every hour in neither
+LABELED = {'flow': {'flow'}, 'normal': {'normal'}}
+CATEGORIES = ['flow', 'normal', 'other']
+COLORS = {'flow': 'tab:blue', 'normal': 'tab:green', 'other': 'tab:red'}
 N_BINS = 200
-MAX_CDF_POINTS = 5000  # the CDF is exact; only the drawn line is subsampled
+HYDRO_MONTHS = [10, 11, 12, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+MONTH_LABELS = ['Oct', 'Nov', 'Dec', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep']
 TARGET = 'Flow_m3_sec'
 
 
@@ -53,8 +57,8 @@ def load_config(yaml_path):
 
 def collect_pairs(config, by_station):
     """
-    Returns ({mask_name: (raw_values, normalized_values)}, {mask_name: counts dict})
-    over every processed basin CSV. Kept pairs: in-mask hours with raw flow > 0.
+    Returns ({category: (raw_values, normalized_values, months)}, {category: counts dict})
+    over every processed basin CSV. Kept pairs: raw flow > 0.
     """
     timeseries_dir = config['processed_timeseries_dir']
     stats_config = {
@@ -64,10 +68,11 @@ def collect_pairs(config, by_station):
         # whole record: each basin's normalization comes from all its own rows
         'train_periods': [{'start_date': None, 'end_date': config['record_end_date']}],
     }
-    raw = {m: [] for m in MASKS}
-    norm = {m: [] for m in MASKS}
-    counts = {m: {'basins': 0, 'in_mask_steps': 0, 'nan_flow_steps': 0, 'zero_flow_steps': 0, 'kept_pairs': 0}
-              for m in MASKS}
+    raw = {c: [] for c in CATEGORIES}
+    norm = {c: [] for c in CATEGORIES}
+    months = {c: [] for c in CATEGORIES}
+    counts = {c: {'basins': 0, 'in_category_steps': 0, 'nan_flow_steps': 0, 'zero_flow_steps': 0,
+                  'kept_pairs': 0} for c in CATEGORIES}
 
     basin_files = sorted(f for f in os.listdir(timeseries_dir) if f.endswith('.csv'))
     for file_name in basin_files:
@@ -77,66 +82,89 @@ def collect_pairs(config, by_station):
             print(f"  [Warning] {basin_id}: no records in unified hydrographs - skipped.")
             continue
         df = pd.read_csv(os.path.join(timeseries_dir, file_name), usecols=['date', TARGET])
-        hours = pd.to_datetime(df['date']).to_numpy()
+        hours = pd.to_datetime(df['date'])
+        hour_values = hours.to_numpy()
+        month_of_hour = hours.dt.month.to_numpy()
         flow = df[TARGET].to_numpy(dtype=np.float64)
         st = compute_basin_stats(stats_config, basin_id)[TARGET]
 
-        for mask_name, flow_types in MASKS.items():
-            starts, ends = build_flow_intervals(station_df, flow_types)
-            in_mask = flow_mask(hours, starts, ends)
-            if not in_mask.any():
+        masks = {c: flow_mask(hour_values, *build_flow_intervals(station_df, types)) for c, types in LABELED.items()}
+        masks['other'] = ~(masks['flow'] | masks['normal'])
+
+        for category in CATEGORIES:
+            in_category = masks[category]
+            if not in_category.any():
                 continue
-            values = flow[in_mask]
+            values = flow[in_category]
             is_nan = np.isnan(values)
             keep = ~is_nan & (values > 0)
-            c = counts[mask_name]
+            c = counts[category]
             c['basins'] += 1
-            c['in_mask_steps'] += int(in_mask.sum())
+            c['in_category_steps'] += int(in_category.sum())
             c['nan_flow_steps'] += int(is_nan.sum())
             c['zero_flow_steps'] += int((values[~is_nan] == 0).sum())
             c['kept_pairs'] += int(keep.sum())
-            raw[mask_name].append(values[keep])
-            norm[mask_name].append((values[keep] - st['mean']) / st['std'])
-        print(f"  {basin_id}: " + ", ".join(f"{m}={len(raw[m][-1]) if raw[m] else 0}" for m in MASKS))
+            raw[category].append(values[keep])
+            norm[category].append((values[keep] - st['mean']) / st['std'])
+            months[category].append(month_of_hour[in_category][keep])
+        print(f"  {basin_id}: " + ", ".join(f"{c}={int(masks[c].sum())}" for c in CATEGORIES))
 
-    pairs = {m: (np.concatenate(raw[m]) if raw[m] else np.array([]),
-                 np.concatenate(norm[m]) if norm[m] else np.array([])) for m in MASKS}
+    def cat(arrays):
+        return np.concatenate(arrays) if arrays else np.array([])
+
+    pairs = {c: (cat(raw[c]), cat(norm[c]), cat(months[c])) for c in CATEGORIES}
     return pairs, counts
 
 
-def histogram_table(values, lower):
-    """200 equal-width bins over [lower, max]; returns DataFrame with counts + cumulative counts."""
-    counts, edges = np.histogram(values, bins=N_BINS, range=(lower, float(values.max())))
-    return pd.DataFrame({'bin_left': edges[:-1], 'bin_right': edges[1:], 'count': counts,
-                         'cumulative_count': np.cumsum(counts)})
+def normalized_hist_table(pairs):
+    """200 equal-width bins over the pooled [min, max] of all categories, one count column per category."""
+    pooled = np.concatenate([pairs[c][1] for c in CATEGORIES])
+    edges = np.histogram_bin_edges(pooled, bins=N_BINS, range=(float(pooled.min()), float(pooled.max())))
+    table = pd.DataFrame({'bin_left': edges[:-1], 'bin_right': edges[1:]})
+    for c in CATEGORIES:
+        table[f'count_{c}'] = np.histogram(pairs[c][1], bins=edges)[0]
+    return table, edges
 
 
-def plot_pdf(hist_df, title, xlabel, log_y):
+def month_count_table(pairs):
+    table = pd.DataFrame({'month': MONTH_LABELS})
+    for c in CATEGORIES:
+        table[f'count_{c}'] = [int((pairs[c][2] == m).sum()) for m in HYDRO_MONTHS]
+    return table
+
+
+def plot_normalized_hist(hist_df, edges, counts):
     fig, ax = plt.subplots(figsize=(10, 6), dpi=150)
-    widths = hist_df['bin_right'] - hist_df['bin_left']
-    ax.bar(hist_df['bin_left'], hist_df['count'], width=widths, align='edge', color='#2f6f9f', edgecolor='none')
-    ax.set_xlabel(xlabel)
+    for c in CATEGORIES:
+        ax.stairs(hist_df[f'count_{c}'], edges, color=COLORS[c], linewidth=1.6,
+                  label=f"{c} ({counts[c]['kept_pairs']:,} pairs)")
+    ax.set_xlabel('Normalized flow (per-basin z-score, all data)')
     ax.set_ylabel('Number of basin-timestep pairs per bin')
-    if log_y:
-        ax.set_yscale('log')
-    ax.set_title(title + (' (log y)' if log_y else ''), fontsize=11)
+    ax.set_yscale('log')
+    ax.set_ylim(top=ax.get_ylim()[1] * 5)  # log-y headroom so the legend clears the data
+    ax.set_title('Normalized flow by Flow_type (flow > 0)', fontsize=11)
     ax.grid(True, linestyle=':', alpha=0.5)
+    ax.legend(loc='upper right', ncol=3)
     fig.tight_layout()
     return fig
 
 
-def plot_cdf(values, title, xlabel, log_y):
-    sorted_values = np.sort(values)
-    cum = np.arange(1, len(sorted_values) + 1)
-    idx = np.unique(np.linspace(0, len(sorted_values) - 1, MAX_CDF_POINTS).astype(int))
+def plot_month_hist(month_df, counts):
     fig, ax = plt.subplots(figsize=(10, 6), dpi=150)
-    ax.step(sorted_values[idx], cum[idx], where='post', color='#b5462f', linewidth=1.8)
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel('Number of basin-timestep pairs with flow <= x')
-    if log_y:
-        ax.set_yscale('log')
-    ax.set_title(title + (' (log y)' if log_y else ''), fontsize=11)
-    ax.grid(True, linestyle=':', alpha=0.5)
+    x = np.arange(len(HYDRO_MONTHS))
+    width = 0.27
+    for i, c in enumerate(CATEGORIES):
+        ax.bar(x + (i - 1) * width, month_df[f'count_{c}'], width=width, color=COLORS[c],
+               label=f"{c} ({counts[c]['kept_pairs']:,} pairs)")
+    ax.set_xticks(x)
+    ax.set_xticklabels(MONTH_LABELS)
+    ax.set_xlabel('Month (hydrological year, Oct - Sep)')
+    ax.set_ylabel('Number of basin-timestep pairs per month')
+    ax.set_yscale('log')
+    ax.set_ylim(top=ax.get_ylim()[1] * 5)  # log-y headroom so the legend clears the data
+    ax.set_title('Basin-timestep pairs per month by Flow_type (flow > 0)', fontsize=11)
+    ax.grid(True, axis='y', linestyle=':', alpha=0.5)
+    ax.legend(loc='upper right', ncol=3)
     fig.tight_layout()
     return fig
 
@@ -152,65 +180,62 @@ def main(config):
     print(f"[INFO] Collecting basin-timestep pairs from {config['processed_timeseries_dir']} ...")
     pairs, counts = collect_pairs(config, by_station)
 
-    use_wandb = config.get('use_wandb', False)
-    if use_wandb:
+    summary_rows = []
+    for c in CATEGORIES:
+        raw_values, norm_values, _ = pairs[c]
+        n = counts[c]
+        assert n['kept_pairs'] + n['zero_flow_steps'] + n['nan_flow_steps'] == n['in_category_steps']
+        row = {'category': c, 'flow_types': '+'.join(sorted(LABELED[c])) if c in LABELED else 'not flow/normal', **n}
+        if len(raw_values):
+            row.update(raw_min=raw_values.min(), raw_median=float(np.median(raw_values)), raw_max=raw_values.max(),
+                       normalized_min=norm_values.min(), normalized_median=float(np.median(norm_values)),
+                       normalized_max=norm_values.max())
+        else:
+            print(f"[WARNING] category '{c}': no pairs with flow > 0.")
+        summary_rows.append(row)
+    summary_df = pd.DataFrame(summary_rows)
+    summary_df.to_csv(os.path.join(output_dir, 'summary.csv'), index=False)
+    print(summary_df.to_string(index=False))
+
+    if sum(counts[c]['kept_pairs'] for c in CATEGORIES) == 0:
+        print("[WARNING] no pairs with flow > 0 - nothing to plot.")
+        return
+
+    hist_df, edges = normalized_hist_table(pairs)
+    month_df = month_count_table(pairs)
+    for c in CATEGORIES:
+        assert hist_df[f'count_{c}'].sum() == month_df[f'count_{c}'].sum() == counts[c]['kept_pairs']
+    hist_df.to_csv(os.path.join(output_dir, 'normalized_flow_hist.csv'), index=False)
+    month_df.to_csv(os.path.join(output_dir, 'month_counts.csv'), index=False)
+
+    figures = {'normalized_flow_hist': plot_normalized_hist(hist_df, edges, counts),
+               'month_hist': plot_month_hist(month_df, counts)}
+    for name, fig in figures.items():
+        fig.savefig(os.path.join(output_dir, f"{name}.png"))
+
+    if config.get('use_wandb', False):
         import wandb
         if config.get('wandb_api_key'):
             wandb.login(key=config['wandb_api_key'])
         wandb.init(project=config.get('wandb_project', 'flash-floods-israel'),
                    name='flow_distribution_all_data', job_type='flow_distribution',
-                   config={'masks': {m: sorted(t) for m, t in MASKS.items()}, 'n_bins': N_BINS,
+                   config={'categories': CATEGORIES, 'n_bins': N_BINS,
                            'processed_timeseries_dir': config['processed_timeseries_dir'],
                            'zero_flow_excluded': True})
-    log = {}
-
-    summary_rows = []
-    for mask_name, (raw_values, norm_values) in pairs.items():
-        c = counts[mask_name]
-        assert c['kept_pairs'] + c['zero_flow_steps'] + c['nan_flow_steps'] == c['in_mask_steps']
-        row = {'mask': mask_name, 'flow_types': '+'.join(sorted(MASKS[mask_name])), **c}
-        if len(raw_values) == 0:
-            print(f"[WARNING] mask '{mask_name}': no pairs with flow > 0 - nothing to plot.")
-            summary_rows.append(row)
-            continue
-        row.update(raw_min=raw_values.min(), raw_median=float(np.median(raw_values)), raw_max=raw_values.max(),
-                   normalized_min=norm_values.min(), normalized_median=float(np.median(norm_values)),
-                   normalized_max=norm_values.max())
-        summary_rows.append(row)
-
-        for kind, values, lower, xlabel in (
-                ('raw', raw_values, 0.0, 'Observed flow [m3/s]'),
-                ('normalized', norm_values, float(norm_values.min()), 'Normalized flow (per-basin z-score, all data)')):
-            hist_df = histogram_table(values, lower)
-            assert hist_df['cumulative_count'].iloc[-1] == len(values)
-            hist_df.to_csv(os.path.join(output_dir, f"{mask_name}_{kind}_hist.csv"), index=False)
-            title = (f"{kind.capitalize()} flow - Flow_type {row['flow_types']} - "
-                     f"{len(values):,} pairs (flow > 0; {c['zero_flow_steps']:,} zero-flow steps excluded)")
-            if use_wandb:
-                log[f"{mask_name}/{kind}/hist_table"] = wandb.Table(dataframe=hist_df)
-            for plot_name, fig in (('pdf', plot_pdf(hist_df, 'PDF: ' + title, xlabel, False)),
-                                   ('pdf_logy', plot_pdf(hist_df, 'PDF: ' + title, xlabel, True)),
-                                   ('cdf', plot_cdf(values, 'CDF: ' + title, xlabel, False)),
-                                   ('cdf_logy', plot_cdf(values, 'CDF: ' + title, xlabel, True))):
-                fig.savefig(os.path.join(output_dir, f"{mask_name}_{kind}_{plot_name}.png"))
-                if use_wandb:
-                    log[f"{mask_name}/{kind}/{plot_name}"] = wandb.Image(fig)
-                plt.close(fig)
-
-    summary_df = pd.DataFrame(summary_rows)
-    summary_path = os.path.join(output_dir, 'summary.csv')
-    summary_df.to_csv(summary_path, index=False)
-    print(summary_df.to_string(index=False))
-
-    if use_wandb:
-        log['summary'] = wandb.Table(dataframe=summary_df)
+        log = {name: wandb.Image(fig) for name, fig in figures.items()}
+        log.update(normalized_flow_hist_table=wandb.Table(dataframe=hist_df),
+                   month_counts_table=wandb.Table(dataframe=month_df),
+                   summary=wandb.Table(dataframe=summary_df))
         wandb.log(log)
         wandb.finish()
+    for fig in figures.values():
+        plt.close(fig)
     print(f"\n[INFO] Flow distribution outputs in: {output_dir}")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="PDF/CDF of observed flow over flow / flow+normal timesteps.")
+    parser = argparse.ArgumentParser(description="Normalized-flow and per-month distributions of flow / normal / "
+                                                 "other Flow_type timesteps.")
     parser.add_argument("--config", type=str, default="configs/preprocess_all_data.yml",
                         help="All-data preprocessing config (default configs/preprocess_all_data.yml).")
     args = parser.parse_args()
