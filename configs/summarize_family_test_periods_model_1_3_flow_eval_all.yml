@@ -1,0 +1,15 @@
+# Summary of the model_1_3 family (all its lead times x the 5 test periods) - src/summarize_family_test_periods.py:
+# models trained only on 'flow' hours (train_flow_*), scored on all test hours (no masking).
+# Derived mode: reports are rebuilt under summary_name/derived_reports/ (mask / ensemble mean) and
+# NSE, flood events / peaks and hydrographs are all computed from them (no reuse of older outputs).
+# Run: python src/summarize_family_test_periods.py --config configs/summarize_family_test_periods_model_1_3_flow_eval_all.yml
+summary_name: family_test_periods_model_1_3_flow_eval_all
+run_dir: ./runs/model_comparisons/
+models: ['1_3_0', '1_3_3', '1_3_6', '1_3_12']
+test_sets: ['2009_2010_2011', '2012_2013_2014', '2015_2016_2020', '2017_2018_2019', '2021_2022_2023']
+model_config_pattern: configs/train_flow_{model}_{test}.yml
+derived_reports: true
+existing_compare_label_pattern: flow_{model}
+use_wandb: true
+wandb_project: flash-floods-israel
+wandb_api_key: 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

@@ -40,12 +40,28 @@ Description: One summary per model FAMILY (e.g. model_0 = leads 0/3/6/12) over
              A (model, test period) without a config or trained best_model.pt is
              skipped and listed in availability.csv.
 
+             Derived mode (any of the optional keys below): each (model, test period)'s
+             reports are rebuilt into summary_name/derived_reports/<model>_<test>/ and
+             everything (hydrographs, events, NSE, statistics) runs on those; the
+             existing_compare_dir_pattern / existing_nse_dir_pattern reuse is off.
+               ensemble_members: ['top1', 'top2', 'top3']   model_config_pattern gets a
+                   {member} placeholder; the prediction is the mean of the members'
+                   predictions (timestamps all members share)
+               eval_flow_type_mask: flow | flow_normal      keep only report rows whose
+                   target hour (timestamp + lead) is labeled with that mask's Flow_types
+                   (same rule as dataset.py's train_flow_type_mask); intervals from
+                   flow_type_intervals_file (default data/processed/flow_type_intervals.csv)
+               derived_reports: true                        derived mode with neither
+
 Usage:
   python src/summarize_family_test_periods.py --config configs/summarize_family_test_periods_model_0.yml [--reevaluate]
+  [--reports-only]   only make sure every member model has its per-basin reports (evaluate if
+                     missing), so parallel summaries sharing models never evaluate concurrently
 """
 
 import argparse
 import colorsys
+import copy
 import glob
 import os
 
@@ -68,8 +84,11 @@ from model_compare_test import (load_config, _read_basin_list, run_single_model_
                                 run_event_and_peaks_analysis)
 from model_compare_eval_test import build_eval_summary
 from NSE_CDF_compare_test_periods import describe_test_years
+from dataset import flow_type_intervals
+from data_type_mask import flow_mask
 
 QUANTILE_GRID = np.linspace(0.0, 1.0, 201)
+REPORT_COLUMN_PREFIXES = ('actual_', 'pred_', 'threshold_')  # what merge_basin_reports / report_nse read
 
 
 def _exp_dir(config):
@@ -91,28 +110,38 @@ def lead_colors(models):
     return colors
 
 
+def is_derived_mode(cfg):
+    return bool(cfg.get('ensemble_members') or cfg.get('eval_flow_type_mask') or cfg.get('derived_reports'))
+
+
 def load_family(cfg):
     """
-    {(model, test): config} for every trained (model, test period), plus
+    {(model, test): [member configs]} for every (model, test period) whose members
+    (cfg['ensemble_members'], else just the one config) are all trained, plus
     availability rows for all of them (found or why skipped).
     """
     found, rows = {}, []
+    members = cfg.get('ensemble_members') or [None]
     for model in cfg['models']:
         for test in cfg['test_sets']:
-            path = cfg['model_config_pattern'].format(model=model, test=test)
-            row = {'model': model, 'test_set': test, 'config': path}
-            if not os.path.exists(path):
-                row['status'] = 'skipped: no config'
-            else:
+            paths = [cfg['model_config_pattern'].format(model=model, test=test, member=m) for m in members]
+            configs, problems = [], []
+            for path in paths:
+                if not os.path.exists(path):
+                    problems.append(f'skipped: no config ({path})' if len(paths) > 1 else 'skipped: no config')
+                    continue
                 config = load_config(path)
                 weights = config.get('checkpoint_path') or os.path.join(_exp_dir(config), 'best_model.pt')
                 if not os.path.exists(weights):
-                    row['status'] = f'skipped: not trained ({weights} missing)'
+                    problems.append(f'skipped: not trained ({weights} missing)')
                 else:
-                    row['status'] = 'used'
-                    found[(model, test)] = config
-            if row['status'] != 'used':
+                    configs.append(config)
+            row = {'model': model, 'test_set': test, 'config': ';'.join(paths),
+                   'status': '; '.join(problems) if problems else 'used'}
+            if problems:
                 print(f"[WARNING] {model} / {test}: {row['status']}")
+            else:
+                found[(model, test)] = configs
             rows.append(row)
     return found, rows
 
@@ -127,6 +156,46 @@ def ensure_reports(config, basins, reevaluate):
         return 'evaluated here'
     print(f"[INFO] {config['experiment_name']}: reusing reports for {n_existing}/{len(basins)} test basins.")
     return 'existing reports'
+
+
+def derive_reports(cfg, model, test, member_configs, basins, lead, out_dir):
+    """
+    Writes this (model, test period)'s derived per-basin reports - the members' mean
+    prediction on their shared timestamps, then (eval_flow_type_mask) only the rows whose
+    target hour is in the mask - and returns (config pointing at them, rows before, rows kept).
+    """
+    derived = copy.deepcopy(member_configs[0])
+    derived['run_dir'] = os.path.join(out_dir, 'derived_reports')
+    derived['experiment_name'] = f"{model}_{test}"
+    report_dir = os.path.join(_exp_dir(derived), 'visualization_reports')
+    os.makedirs(report_dir, exist_ok=True)
+    mask_name = cfg.get('eval_flow_type_mask')
+    intervals_file = cfg.get('flow_type_intervals_file', 'data/processed/flow_type_intervals.csv')
+
+    n_rows = n_kept = 0
+    for basin in basins:
+        paths = [_report_path(c, basin) for c in member_configs]
+        if not all(os.path.exists(p) for p in paths):
+            continue
+        frames = [pd.read_csv(p, parse_dates=['timestamp']).set_index('timestamp') for p in paths]
+        shared = frames[0].index
+        for frame in frames[1:]:
+            shared = shared.intersection(frame.index)
+        df = frames[0].loc[shared, [c for c in frames[0].columns if c.startswith(REPORT_COLUMN_PREFIXES)]].copy()
+        for col in [c for c in df.columns if c.startswith('pred_')]:
+            df[col] = np.mean([frame.loc[shared, col].to_numpy() for frame in frames], axis=0)
+        df = df.sort_index().reset_index()
+        n_rows += len(frames[0])
+        if mask_name:
+            starts, ends = flow_type_intervals(intervals_file, mask_name, basin)
+            target_hours = (df['timestamp'] + pd.Timedelta(hours=lead)).to_numpy()
+            df = df[flow_mask(target_hours, starts, ends)]
+        n_kept += len(df)
+        if not df.empty:
+            df.to_csv(os.path.join(report_dir, f"visual_report_basin_{basin}.csv"), index=False)
+    print(f"[INFO] {model} / {test}: derived reports from {len(member_configs)} member(s), "
+          f"mask={mask_name or 'none'}: kept {n_kept:,} of {n_rows:,} rows.")
+    return derived, n_rows, n_kept
 
 
 def collect_nse(cfg, model, test, config, basins, lead):
@@ -233,13 +302,16 @@ def stats_for(cfg, model, test, thr, family_out_dir):
     return None, None
 
 
-def main(config_path, reevaluate=False):
+def main(config_path, reevaluate=False, reports_only=False):
     cfg = load_config(config_path)
     for key in ('models', 'test_sets'):
         if not all(isinstance(v, str) for v in cfg[key]):
             raise ValueError(f"'{key}' entries must be quoted strings in {config_path} - YAML reads unquoted "
                              f"0_12 / 2009_2010_2011 as numbers. Got: {cfg[key]}")
-    out_dir =os.path.join(cfg.get('run_dir', './runs/model_comparisons/'), cfg['summary_name'])
+    derived_mode = is_derived_mode(cfg)
+    if derived_mode:  # derived reports differ from what the existing analyses scored
+        cfg = {k: v for k, v in cfg.items() if k not in ('existing_compare_dir_pattern', 'existing_nse_dir_pattern')}
+    out_dir = os.path.join(cfg.get('run_dir', './runs/model_comparisons/'), cfg['summary_name'])
     os.makedirs(out_dir, exist_ok=True)
     print("=" * 75)
     print(f"      Family summary '{cfg['summary_name']}': models {cfg['models']} x test sets {cfg['test_sets']}")
@@ -249,8 +321,8 @@ def main(config_path, reevaluate=False):
     if not family:
         raise RuntimeError("No trained (model, test period) found - nothing to summarize. See the warnings above.")
     leads = {}
-    for (model, _), config in family.items():
-        leads[model] = config['forecast_lead_times'][0]
+    for (model, _), member_configs in family.items():
+        leads[model] = member_configs[0]['forecast_lead_times'][0]
     models = [m for m in cfg['models'] if m in leads]
     avail_by_key = {(r['model'], r['test_set']): r for r in availability}
 
@@ -260,10 +332,22 @@ def main(config_path, reevaluate=False):
         test_models = [m for m in models if (m, test) in family]
         if not test_models:
             continue
-        configs = [family[(m, test)] for m in test_models]
-        basins = sorted(_read_basin_list(configs[0]['test_basin_file']))
-        for model, config in zip(test_models, configs):
-            avail_by_key[(model, test)]['reports'] = ensure_reports(config, basins, reevaluate)
+        basins = sorted(_read_basin_list(family[(test_models[0], test)][0]['test_basin_file']))
+        configs = []
+        for model in test_models:
+            member_configs = family[(model, test)]
+            avail_by_key[(model, test)]['reports'] = ';'.join(ensure_reports(c, basins, reevaluate)
+                                                               for c in member_configs)
+            if reports_only:
+                continue
+            if derived_mode:
+                derived, n_rows, n_kept = derive_reports(cfg, model, test, member_configs, basins, leads[model],
+                                                         out_dir)
+                avail_by_key[(model, test)].update(report_rows=n_rows, kept_rows=n_kept)
+                family[(model, test)] = [derived]
+            configs.append(family[(model, test)][0])
+        if reports_only:
+            continue
 
         test_out = os.path.join(out_dir, f"test_{test}")
         os.makedirs(test_out, exist_ok=True)
@@ -281,6 +365,11 @@ def main(config_path, reevaluate=False):
             nse_rows += [{'model': model, 'lead': leads[model], 'test_years': years, 'test_set': test,
                           'source': source, **r} for r in rows]
 
+    if reports_only:
+        pd.DataFrame(availability).to_csv(os.path.join(out_dir, 'availability_reports_only.csv'), index=False)
+        print(f"\n[INFO] --reports-only: every member model has its reports. Outputs in: {out_dir}")
+        return
+
     # Step D: NSE CDF
     nse_df = pd.DataFrame(nse_rows)
     nse_df.to_csv(os.path.join(out_dir, 'nse_per_basin.csv'), index=False)
@@ -296,7 +385,7 @@ def main(config_path, reevaluate=False):
     nse_summary.to_csv(os.path.join(out_dir, 'nse_summary.csv'), index=False)
 
     # Step E: event statistics per lead x test period, and their median per lead
-    any_config = next(iter(family.values()))
+    any_config = next(iter(family.values()))[0]
     thr_labels = [ffe.threshold_label(s) for s in ffe.normalize_threshold_specs(any_config['prediction_threshold'])]
     stats_tables = {}
     for thr in thr_labels:
@@ -356,5 +445,7 @@ if __name__ == "__main__":
     parser.add_argument("--config", type=str, required=True)
     parser.add_argument("--reevaluate", action="store_true",
                         help="Re-run every model over its test split even if its reports already exist.")
+    parser.add_argument("--reports-only", action="store_true",
+                        help="Only evaluate member models that have no reports yet, then stop.")
     args = parser.parse_args()
-    main(args.config, reevaluate=args.reevaluate)
+    main(args.config, reevaluate=args.reevaluate, reports_only=args.reports_only)

@@ -410,6 +410,20 @@ def plot_nse_cdf_comparison(model_nse, model_leads, comparison_config, output_di
     return fig
 
 
+def _break_gaps(window_df):
+    """
+    Plot-only copy of window_df with an all-NaN row after every jump of more than
+    one hour between consecutive timestamps, so matplotlib leaves a gap there
+    instead of drawing a straight line across hours missing from the reports
+    (e.g. hours removed by summarize_family_test_periods' eval_flow_type_mask).
+    """
+    gap_after = window_df['timestamp'].diff().shift(-1) > pd.Timedelta(hours=1)
+    if not gap_after.any():
+        return window_df
+    breaks = pd.DataFrame({'timestamp': window_df.loc[gap_after, 'timestamp'] + pd.Timedelta(minutes=30)})
+    return pd.concat([window_df, breaks], ignore_index=True).sort_values('timestamp', kind='stable')
+
+
 def plot_hydrograph_comparison(window_df, model_labels, model_leads, model_color_map, title,
                                 output_dir, filename, event_labels=None, hourly_xticks=False,
                                 xlim=None, shown_threshold_specs=None, core_window=None):
@@ -434,6 +448,7 @@ def plot_hydrograph_comparison(window_df, model_labels, model_leads, model_color
     every threshold_*yr_rp column found in window_df. None draws nothing.
     core_window: optional (core_start, core_end) - shaded as the event's core.
     """
+    window_df = _break_gaps(window_df)
     fig, ax = plt.subplots(figsize=(12, 6.5), dpi=150, facecolor="#fafafa")
     ax.set_facecolor("#ffffff")
 
@@ -506,6 +521,7 @@ def plot_hydrograph_difference(window_df, model_labels, model_leads, model_color
     threshold line wouldn't mean anything here.
     core_window: optional (core_start, core_end) - shaded as the event's core.
     """
+    window_df = _break_gaps(window_df)
     fig, ax = plt.subplots(figsize=(12, 6.5), dpi=150, facecolor="#fafafa")
     ax.set_facecolor("#ffffff")
 

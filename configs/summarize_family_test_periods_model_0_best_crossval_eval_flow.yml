@@ -1,0 +1,16 @@
+# Summary of the model_0 family (all its lead times x the 5 test periods) - src/summarize_family_test_periods.py:
+# original models trained on all hours (best_crossval_*), scored on only test hours labeled 'flow'.
+# Derived mode: reports are rebuilt under summary_name/derived_reports/ (mask / ensemble mean) and
+# NSE, flood events / peaks and hydrographs are all computed from them (no reuse of older outputs).
+# Run: python src/summarize_family_test_periods.py --config configs/summarize_family_test_periods_model_0_best_crossval_eval_flow.yml
+summary_name: family_test_periods_model_0_best_crossval_eval_flow
+run_dir: ./runs/model_comparisons/
+models: ['0_0', '0_3', '0_6', '0_12']
+test_sets: ['2009_2010_2011', '2012_2013_2014', '2015_2016_2020', '2017_2018_2019', '2021_2022_2023']
+model_config_pattern: configs/best_crossval_{model}_{test}.yml
+eval_flow_type_mask: flow
+flow_type_intervals_file: data/processed/flow_type_intervals.csv
+existing_compare_label_pattern: best_crossval_{model}
+use_wandb: true
+wandb_project: flash-floods-israel
+wandb_api_key: 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
