@@ -5,7 +5,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
-#SBATCH --time=24:00:00
+#SBATCH --time=72:00:00
 
 # Hydrographs, NSE CDF and median statistics of one model family over its leads x test periods
 # (src/summarize_family_test_periods.py). The GPU is only used when a model has no per-basin reports yet.

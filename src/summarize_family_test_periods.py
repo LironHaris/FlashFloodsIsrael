@@ -146,16 +146,31 @@ def load_family(cfg):
     return found, rows
 
 
+def _reports_complete_marker(config):
+    return os.path.join(_exp_dir(config), "visualization_reports", ".reports_complete")
+
+
 def ensure_reports(config, basins, reevaluate):
-    """Reuses existing per-basin reports; evaluates the model only if none exist (or --reevaluate)."""
-    n_existing = sum(os.path.exists(_report_path(config, b)) for b in basins)
-    if reevaluate or n_existing == 0:
-        why = '--reevaluate' if reevaluate else 'no existing reports'
-        print(f"[INFO] {config['experiment_name']}: evaluating on {len(basins)} test basins ({why})...")
-        run_single_model_eval(config, basins)
-        return 'evaluated here'
-    print(f"[INFO] {config['experiment_name']}: reusing reports for {n_existing}/{len(basins)} test basins.")
-    return 'existing reports'
+    """
+    Reuses existing per-basin reports; evaluates the model only on the basins that have none
+    (all of them with --reevaluate). A marker file written after a finished evaluation tells a
+    complete set (some basins legitimately have no test windows) from one cut off mid-run - e.g.
+    a job killed at its time limit - whose remaining basins are then evaluated here.
+    """
+    marker = _reports_complete_marker(config)
+    missing = [b for b in basins if not os.path.exists(_report_path(config, b))]
+    if not reevaluate and (not missing or os.path.exists(marker)):
+        print(f"[INFO] {config['experiment_name']}: reusing reports for "
+              f"{len(basins) - len(missing)}/{len(basins)} test basins.")
+        return 'existing reports'
+    to_eval = basins if reevaluate else missing
+    why = '--reevaluate' if reevaluate else (
+        'no existing reports' if len(missing) == len(basins) else f'{len(missing)} basins missing (partial run)')
+    print(f"[INFO] {config['experiment_name']}: evaluating on {len(to_eval)} test basins ({why})...")
+    run_single_model_eval(config, to_eval)
+    with open(marker, 'w') as f:
+        f.write('evaluation finished\n')
+    return 'evaluated here'
 
 
 def derive_reports(cfg, model, test, member_configs, basins, lead, out_dir):
@@ -326,6 +341,17 @@ def main(config_path, reevaluate=False, reports_only=False):
     models = [m for m in cfg['models'] if m in leads]
     avail_by_key = {(r['model'], r['test_set']): r for r in availability}
 
+    # --reports-only jobs get their own W&B run, logging progress as each (model, test period) finishes
+    reports_run = None
+    if reports_only and cfg.get('use_wandb', False) and WANDB_AVAILABLE:
+        if cfg.get('wandb_api_key'):
+            wandb.login(key=cfg['wandb_api_key'])
+        reports_run = wandb.init(project=cfg.get('wandb_project', 'flash-floods-israel'),
+                                 name=f"{cfg['summary_name']}_reports", job_type='reports',
+                                 config={k: v for k, v in cfg.items() if k != 'wandb_api_key'})
+    n_total = sum(len(v) for v in family.values())
+    n_done = 0
+
     # Step A + B: reports, then hydrographs / event comparison per test period (family's leads only)
     nse_rows = []
     for test in cfg['test_sets']:
@@ -336,8 +362,14 @@ def main(config_path, reevaluate=False, reports_only=False):
         configs = []
         for model in test_models:
             member_configs = family[(model, test)]
-            avail_by_key[(model, test)]['reports'] = ';'.join(ensure_reports(c, basins, reevaluate)
-                                                               for c in member_configs)
+            statuses = []
+            for c in member_configs:
+                statuses.append(ensure_reports(c, basins, reevaluate))
+                n_done += 1
+                if reports_run is not None:
+                    wandb.log({'models_done': n_done, 'models_total': n_total,
+                               'evaluated_here': int(statuses[-1] == 'evaluated here')})
+            avail_by_key[(model, test)]['reports'] = ';'.join(statuses)
             if reports_only:
                 continue
             if derived_mode:
@@ -367,6 +399,9 @@ def main(config_path, reevaluate=False, reports_only=False):
 
     if reports_only:
         pd.DataFrame(availability).to_csv(os.path.join(out_dir, 'availability_reports_only.csv'), index=False)
+        if reports_run is not None:
+            wandb.log({'availability': wandb.Table(dataframe=pd.DataFrame(availability).astype(str))})
+            wandb.finish()
         print(f"\n[INFO] --reports-only: every member model has its reports. Outputs in: {out_dir}")
         return
 
