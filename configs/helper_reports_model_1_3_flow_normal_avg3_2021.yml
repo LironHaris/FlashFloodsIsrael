@@ -1,0 +1,13 @@
+# Helper for the running reports_model_1_3_flow_normal_avg3_eval_all job (46607956): evaluates the
+# 2021_2022_2023 member models in REVERSE lead/member order, so the running job finds them done
+# (.reports_complete) and finishes within its time limit. Run with --reports-only only.
+summary_name: helper_reports_model_1_3_flow_normal_avg3_2021
+run_dir: ./runs/model_comparisons/
+models: ['1_3_12', '1_3_6', '1_3_3', '1_3_0']
+test_sets: ['2021_2022_2023']
+model_config_pattern: configs/train_flow_normal_{model}_{member}_{test}.yml
+ensemble_members: ['top3', 'top2', 'top1']
+derived_reports: true
+use_wandb: true
+wandb_project: flash-floods-israel
+wandb_api_key: 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
