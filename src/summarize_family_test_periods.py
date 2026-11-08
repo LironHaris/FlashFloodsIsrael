@@ -57,6 +57,10 @@ Usage:
   python src/summarize_family_test_periods.py --config configs/summarize_family_test_periods_model_0.yml [--reevaluate]
   [--reports-only]   only make sure every member model has its per-basin reports (evaluate if
                      missing), so parallel summaries sharing models never evaluate concurrently
+  [--cumulative-only] only the cumulative-lead statistics (an event counts as predicted at lead L if
+                     any lead >= L predicted it) from existing flood_event_comparison CSVs:
+                     stats_cumulative_by_lead_test_period_<thr>.csv, median_cumulative_stats_by_lead_<thr>.csv,
+                     W&B run <summary_name>_cumulative. A full run writes them too (Step E2).
 """
 
 import argparse
@@ -82,7 +86,7 @@ import find_flood_events as ffe
 import plot_hydrographs as ph
 from model_compare_test import (load_config, _read_basin_list, run_single_model_eval, report_nse,
                                 run_event_and_peaks_analysis)
-from model_compare_eval_test import build_eval_summary
+from model_compare_eval_test import build_eval_summary, compute_cumulative_confusion
 from NSE_CDF_compare_test_periods import describe_test_years
 from dataset import flow_type_intervals
 from data_type_mask import flow_mask
@@ -317,7 +321,85 @@ def stats_for(cfg, model, test, thr, family_out_dir):
     return None, None
 
 
-def main(config_path, reevaluate=False, reports_only=False):
+def cumulative_stats(cfg, family, models, leads, thr_labels, out_dir):
+    """
+    Cumulative-lead event statistics (model_compare_eval_test.compute_cumulative_confusion:
+    a lead counts an event as predicted if it or ANY longer lead of the family predicted it)
+    per lead x test period, and their median over test periods per lead. Events come from
+    flood_event_comparison_<thr>.csv - the existing comparison's (existing_compare_dir_pattern,
+    non-derived configs) when it has this family's labels, else this run's test_<test>/ folder.
+    Writes stats_cumulative_by_lead_test_period_<thr>.csv and median_cumulative_stats_by_lead_<thr>.csv;
+    returns {thr: (long_df, median_df)}.
+    """
+    label_pattern = cfg.get('existing_compare_label_pattern', '{model}')
+    tests = sorted({t for (_, t) in family})
+    results = {}
+    for thr in thr_labels:
+        long_frames = []
+        for test in tests:
+            label_leads = {label_pattern.format(model=m, test=test): leads[m] for m in models if (m, test) in family}
+            label_model = {label_pattern.format(model=m, test=test): m for m in models if (m, test) in family}
+            candidates = []
+            compare_dir = cfg.get('existing_compare_dir_pattern', '').format(model='', test=test)
+            if cfg.get('existing_compare_dir_pattern'):
+                candidates.append(('existing comparison', os.path.join(compare_dir, f"flood_event_comparison_{thr}.csv")))
+            candidates.append(('this run (family only)',
+                               os.path.join(out_dir, f"test_{test}", f"flood_event_comparison_{thr}.csv")))
+            cum_df = None
+            for source, path in candidates:
+                if not os.path.exists(path):
+                    continue
+                events_df = pd.read_csv(path)
+                if not set(label_leads) <= set(events_df['model_label'].astype(str)):
+                    continue
+                cum_df = compute_cumulative_confusion(events_df.astype({'model_label': str}), label_leads)
+                break
+            if cum_df is None or cum_df.empty:
+                print(f"[WARNING] Cumulative stats: no flood_event_comparison_{thr}.csv with labels "
+                      f"{sorted(label_leads)} for test set {test}.")
+                continue
+            cum_df.insert(0, 'model', cum_df['model_label'].map(label_model))
+            cum_df['test_set'] = test
+            cum_df['source'] = source
+            long_frames.append(cum_df)
+        if not long_frames:
+            continue
+        long_df = pd.concat(long_frames, ignore_index=True)
+        long_df.to_csv(os.path.join(out_dir, f"stats_cumulative_by_lead_test_period_{thr}.csv"), index=False)
+        median_rows = []
+        for model, g in long_df.groupby('model', sort=False):
+            r = {'model': model, 'lead': leads[model], 'cum_leads': g['cum_leads'].iloc[0],
+                 'n_test_periods': len(g), 'test_periods': ';'.join(g['test_set'])}
+            r.update({c: float(g[c].median()) for c in ('tp', 'fp', 'fn', 'precision', 'recall', 'f1')})
+            median_rows.append(r)
+        median_df = pd.DataFrame(median_rows).sort_values('lead', ascending=False).reset_index(drop=True)
+        median_df.to_csv(os.path.join(out_dir, f"median_cumulative_stats_by_lead_{thr}.csv"), index=False)
+        print(f"\n[INFO] Cumulative median statistics over test periods ({thr}):")
+        print(median_df[['model', 'lead', 'cum_leads', 'n_test_periods', 'precision', 'recall', 'f1']]
+              .to_string(index=False))
+        results[thr] = (long_df, median_df)
+    return results
+
+
+def _wandb_init(cfg, name, job_type):
+    if cfg.get('wandb_api_key'):
+        wandb.login(key=cfg['wandb_api_key'])
+    return wandb.init(project=cfg.get('wandb_project', 'flash-floods-israel'), name=name, job_type=job_type,
+                      config={k: v for k, v in cfg.items() if k != 'wandb_api_key'})
+
+
+def _cumulative_wandb_log(cum_results):
+    log = {}
+    for thr, (long_df, median_df) in cum_results.items():
+        log[f'median_cumulative_stats_by_lead_{thr}'] = wandb.Table(dataframe=median_df)
+        log[f'stats_cumulative_by_lead_test_period_{thr}'] = wandb.Table(dataframe=long_df)
+        for _, row in median_df.iterrows():
+            for m in ('precision', 'recall', 'f1'):
+                log[f"cumulative/{thr}/lead_{row['lead']}h/{m}"] = row[m]
+    return log
+
+
+def main(config_path, reevaluate=False, reports_only=False, cumulative_only=False):
     cfg = load_config(config_path)
     for key in ('models', 'test_sets'):
         if not all(isinstance(v, str) for v in cfg[key]):
@@ -340,15 +422,26 @@ def main(config_path, reevaluate=False, reports_only=False):
         leads[model] = member_configs[0]['forecast_lead_times'][0]
     models = [m for m in cfg['models'] if m in leads]
     avail_by_key = {(r['model'], r['test_set']): r for r in availability}
+    any_config = next(iter(family.values()))[0]
+    thr_labels = [ffe.threshold_label(s) for s in ffe.normalize_threshold_specs(any_config['prediction_threshold'])]
+
+    # --cumulative-only: just the cumulative-lead statistics from the flood_event_comparison CSVs already
+    # on disk (no reports / evaluation / hydrographs / NSE), in their own W&B run
+    if cumulative_only:
+        cum_results = cumulative_stats(cfg, family, models, leads, thr_labels, out_dir)
+        if not cum_results:
+            raise RuntimeError("No flood_event_comparison CSVs found for this family - run the summary first.")
+        if cfg.get('use_wandb', False) and WANDB_AVAILABLE:
+            _wandb_init(cfg, f"{cfg['summary_name']}_cumulative", 'cumulative_stats')
+            wandb.log(_cumulative_wandb_log(cum_results))
+            wandb.finish()
+        print(f"\n[INFO] --cumulative-only completed. Outputs in: {out_dir}")
+        return
 
     # --reports-only jobs get their own W&B run, logging progress as each (model, test period) finishes
     reports_run = None
     if reports_only and cfg.get('use_wandb', False) and WANDB_AVAILABLE:
-        if cfg.get('wandb_api_key'):
-            wandb.login(key=cfg['wandb_api_key'])
-        reports_run = wandb.init(project=cfg.get('wandb_project', 'flash-floods-israel'),
-                                 name=f"{cfg['summary_name']}_reports", job_type='reports',
-                                 config={k: v for k, v in cfg.items() if k != 'wandb_api_key'})
+        reports_run = _wandb_init(cfg, f"{cfg['summary_name']}_reports", 'reports')
     n_total = sum(len(v) for v in family.values())
     n_done = 0
 
@@ -420,8 +513,6 @@ def main(config_path, reevaluate=False, reports_only=False):
     nse_summary.to_csv(os.path.join(out_dir, 'nse_summary.csv'), index=False)
 
     # Step E: event statistics per lead x test period, and their median per lead
-    any_config = next(iter(family.values()))[0]
-    thr_labels = [ffe.threshold_label(s) for s in ffe.normalize_threshold_specs(any_config['prediction_threshold'])]
     stats_tables = {}
     for thr in thr_labels:
         long_rows = []
@@ -453,18 +544,23 @@ def main(config_path, reevaluate=False, reports_only=False):
         print(median_df[['model', 'lead', 'n_test_periods'] + [c for c in ('precision', 'recall', 'f1')
                                                               if c in median_df]].to_string(index=False))
 
+    # Step E2: cumulative-lead event statistics (never allowed to stop the rest of the summary)
+    try:
+        cum_results = cumulative_stats(cfg, family, models, leads, thr_labels, out_dir)
+    except Exception as e:
+        print(f"[WARNING] Cumulative statistics failed: {e!r}")
+        cum_results = {}
+
     availability_df = pd.DataFrame(availability)
     availability_df.to_csv(os.path.join(out_dir, 'availability.csv'), index=False)
 
     if cfg.get('use_wandb', False) and WANDB_AVAILABLE:
-        if cfg.get('wandb_api_key'):
-            wandb.login(key=cfg['wandb_api_key'])
-        wandb.init(project=cfg.get('wandb_project', 'flash-floods-israel'), name=cfg['summary_name'],
-                   job_type='family_test_periods_summary', config=cfg)
+        _wandb_init(cfg, cfg['summary_name'], 'family_test_periods_summary')
         log = {'nse_cdf': wandb.Image(cdf_fig), 'nse_summary': wandb.Table(dataframe=nse_summary),
                'availability': wandb.Table(dataframe=availability_df.astype(str))}
         for thr, df in stats_tables.items():
             log[f'median_stats_by_lead_{thr}'] = wandb.Table(dataframe=df)
+        log.update(_cumulative_wandb_log(cum_results))
         wandb.log(log)
         for test in cfg['test_sets']:
             for png in sorted(glob.glob(os.path.join(out_dir, f"test_{test}", "comparison_plots", "hydrograph_*.png"))):
@@ -482,5 +578,9 @@ if __name__ == "__main__":
                         help="Re-run every model over its test split even if its reports already exist.")
     parser.add_argument("--reports-only", action="store_true",
                         help="Only evaluate member models that have no reports yet, then stop.")
+    parser.add_argument("--cumulative-only", action="store_true",
+                        help="Only compute the cumulative-lead event statistics from the existing "
+                             "flood_event_comparison CSVs (no GPU, seconds) and log them to their own W&B run.")
     args = parser.parse_args()
-    main(args.config, reevaluate=args.reevaluate, reports_only=args.reports_only)
+    main(args.config, reevaluate=args.reevaluate, reports_only=args.reports_only,
+         cumulative_only=args.cumulative_only)

@@ -62,6 +62,71 @@ def compute_confusion_matrix(events_df):
     return pd.DataFrame(rows)
 
 
+def _prf(tp, fp, fn):
+    precision = tp / (tp + fp) if (tp + fp) > 0 else float('nan')
+    recall = tp / (tp + fn) if (tp + fn) > 0 else float('nan')
+    f1 = 2 * tp / (2 * tp + fp + fn) if (2 * tp + fp + fn) > 0 else float('nan')
+    return precision, recall, f1
+
+
+def compute_cumulative_confusion(events_df, label_leads):
+    """
+    Cumulative-lead TP/FP/FN and precision/recall/F1 from flood_event_comparison.csv,
+    one row per model label in label_leads ({model_label: lead}; other labels' rows
+    are ignored, e.g. another family in the same comparison). For a model with lead L,
+    an event counts as predicted when ANY label with lead >= L predicted it (label TP
+    or FP), and as missed only when none did - so the longest lead is unchanged and
+    each shorter lead adds its own detections to those of the longer leads. An event
+    is real when its row is TP or FN (same for every model of that event). Events
+    neither real nor predicted by the set (TN) are not counted.
+    """
+    columns = ['model_label', 'lead', 'cum_leads', 'tp', 'fp', 'fn', 'precision', 'recall', 'f1']
+    df = events_df[events_df['model_label'].isin(label_leads)]
+    if df.empty:
+        return pd.DataFrame(columns=columns)
+    df = df.assign(real=df['label'].isin(['TP', 'FN']), pred=df['label'].isin(['TP', 'FP']),
+                   lead=df['model_label'].map(label_leads))
+    keys = ['basin_id', 'event_idx']
+    real = df.groupby(keys)['real'].any()
+
+    rows = []
+    for label, lead in sorted(label_leads.items(), key=lambda kv: -kv[1]):
+        cum_leads = sorted({l for l in label_leads.values() if l >= lead}, reverse=True)
+        pred = df[df['lead'] >= lead].groupby(keys)['pred'].any().reindex(real.index, fill_value=False)
+        tp = int((real & pred).sum())
+        fn = int((real & ~pred).sum())
+        fp = int((~real & pred).sum())
+        precision, recall, f1 = _prf(tp, fp, fn)
+        rows.append({'model_label': label, 'lead': lead, 'cum_leads': ';'.join(str(l) for l in cum_leads),
+                     'tp': tp, 'fp': fp, 'fn': fn, 'precision': precision, 'recall': recall, 'f1': f1})
+    return pd.DataFrame(rows, columns=columns)
+
+
+def infer_cumulative_groups(label_leads, explicit_groups=None):
+    """
+    {group: {label: lead}} - explicit_groups ({group: [labels]}) if given, else each
+    label with its own '_{lead}' suffix stripped (best_crossval_1_3_12 -> best_crossval_1_3).
+    Groups holding two labels with the same lead are dropped with a warning.
+    """
+    groups = {}
+    if explicit_groups:
+        for name, labels in explicit_groups.items():
+            groups[name] = {l: label_leads[l] for l in labels if l in label_leads}
+    else:
+        for label, lead in label_leads.items():
+            suffix = f"_{lead}"
+            name = label[:-len(suffix)] if label.endswith(suffix) else label
+            groups.setdefault(name, {})[label] = lead
+    valid = {}
+    for name, members in groups.items():
+        if len(set(members.values())) != len(members):
+            print(f"[Warning] Cumulative group '{name}' has duplicate leads {members} - skipped. "
+                  f"Set cumulative_groups in the comparison config.")
+            continue
+        valid[name] = members
+    return valid
+
+
 def reshape_peaks_summary(peaks_summary_df):
     """
     Flattens peaks_analysis_comparison_summary.csv (one row per model x
@@ -125,8 +190,12 @@ def main(comparison_config_path="configs/compare_model_0_leads.yml"):
     comparison_config = load_config(comparison_config_path)
     output_dir = _get_comparison_output_dir(comparison_config)
 
-    first_model_config = load_config(comparison_config['model_configs'][0])
+    model_configs = [load_config(p) for p in comparison_config['model_configs']]
+    first_model_config = model_configs[0]
     prediction_specs = ffe.normalize_threshold_specs(first_model_config['prediction_threshold'])
+    model_labels = comparison_config.get('model_labels') or [c['experiment_name'] for c in model_configs]
+    label_leads = {label: c['forecast_lead_times'][0] for label, c in zip(model_labels, model_configs)}
+    cumulative_groups = infer_cumulative_groups(label_leads, comparison_config.get('cumulative_groups'))
 
     use_wandb = comparison_config.get('use_wandb', False) and WANDB_AVAILABLE
     if use_wandb:
@@ -136,7 +205,7 @@ def main(comparison_config_path="configs/compare_model_0_leads.yml"):
         wandb.init(
             project=comparison_config.get('wandb_project', 'flash-floods-israel'),
             name=f"{comparison_config['comparison_name']}_eval",
-            config=comparison_config,
+            config={k: v for k, v in comparison_config.items() if k != 'wandb_api_key'},
         )
 
     combined_dfs = {}
@@ -164,6 +233,27 @@ def main(comparison_config_path="configs/compare_model_0_leads.yml"):
                     f"compare_eval/{label}/{model_label}/time_distance_h_TP_mean": row['time_distance_h_TP_mean'],
                     f"compare_eval/{label}/{model_label}/magnitude_diff_norm_TP_mean": row['magnitude_diff_norm_TP_mean'],
                 })
+
+        # Cumulative-lead statistics, per model within its family group
+        events_df = pd.read_csv(os.path.join(output_dir, f"flood_event_comparison_{label}.csv"))
+        cum_frames = []
+        for group, members in cumulative_groups.items():
+            cum_df = compute_cumulative_confusion(events_df, members)
+            if not cum_df.empty:
+                cum_frames.append(cum_df.assign(group=group))
+        if cum_frames:
+            cum_df = pd.concat(cum_frames, ignore_index=True)
+            cum_df = cum_df[['group'] + [c for c in cum_df.columns if c != 'group']]
+            cum_path = os.path.join(output_dir, f"model_comparison_eval_cumulative_{label}.csv")
+            cum_df.to_csv(cum_path, index=False)
+            print(f"\nCumulative-lead evaluation summary [{label}]:")
+            print(cum_df.to_string(index=False))
+            print(f"\n[INFO] Saved to: {cum_path}\n")
+            if use_wandb:
+                wandb.log({f"compare_eval_cumulative/{label}/table": wandb.Table(dataframe=cum_df)})
+                for _, row in cum_df.iterrows():
+                    wandb.log({f"compare_eval_cumulative/{label}/{row['model_label']}/{m}": row[m]
+                               for m in ('precision', 'recall', 'f1')})
 
     if use_wandb:
         wandb.finish()
