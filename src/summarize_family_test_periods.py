@@ -61,6 +61,10 @@ Usage:
                      any lead >= L predicted it) from existing flood_event_comparison CSVs:
                      stats_cumulative_by_lead_test_period_<thr>.csv, median_cumulative_stats_by_lead_<thr>.csv,
                      W&B run <summary_name>_cumulative. A full run writes them too (Step E2).
+  [--basin-only]     only the per-basin analysis (family_basin_analysis.py) from the existing outputs:
+                     basin_analysis/basin_scores_<thr>.csv (median NSE, pooled precision/recall and cumulative
+                     precision/recall per lead, per basin) + per-basin scatter plots vs aridity / area / PC1,
+                     W&B run <summary_name>_basin_analysis. A full run writes them too (Step E3).
 """
 
 import argparse
@@ -87,6 +91,7 @@ import plot_hydrographs as ph
 from model_compare_test import (load_config, _read_basin_list, run_single_model_eval, report_nse,
                                 run_event_and_peaks_analysis)
 from model_compare_eval_test import build_eval_summary, compute_cumulative_confusion
+from family_basin_analysis import find_event_csv, run_basin_analysis, wandb_log_dict as basin_wandb_log
 from NSE_CDF_compare_test_periods import describe_test_years
 from dataset import flow_type_intervals
 from data_type_mask import flow_mask
@@ -339,21 +344,8 @@ def cumulative_stats(cfg, family, models, leads, thr_labels, out_dir):
         for test in tests:
             label_leads = {label_pattern.format(model=m, test=test): leads[m] for m in models if (m, test) in family}
             label_model = {label_pattern.format(model=m, test=test): m for m in models if (m, test) in family}
-            candidates = []
-            compare_dir = cfg.get('existing_compare_dir_pattern', '').format(model='', test=test)
-            if cfg.get('existing_compare_dir_pattern'):
-                candidates.append(('existing comparison', os.path.join(compare_dir, f"flood_event_comparison_{thr}.csv")))
-            candidates.append(('this run (family only)',
-                               os.path.join(out_dir, f"test_{test}", f"flood_event_comparison_{thr}.csv")))
-            cum_df = None
-            for source, path in candidates:
-                if not os.path.exists(path):
-                    continue
-                events_df = pd.read_csv(path)
-                if not set(label_leads) <= set(events_df['model_label'].astype(str)):
-                    continue
-                cum_df = compute_cumulative_confusion(events_df.astype({'model_label': str}), label_leads)
-                break
+            source, events_df = find_event_csv(cfg, out_dir, test, thr, label_leads)
+            cum_df = compute_cumulative_confusion(events_df, label_leads) if events_df is not None else None
             if cum_df is None or cum_df.empty:
                 print(f"[WARNING] Cumulative stats: no flood_event_comparison_{thr}.csv with labels "
                       f"{sorted(label_leads)} for test set {test}.")
@@ -399,7 +391,18 @@ def _cumulative_wandb_log(cum_results):
     return log
 
 
-def main(config_path, reevaluate=False, reports_only=False, cumulative_only=False):
+def basin_analysis(cfg, family, models, leads, thr_labels, out_dir):
+    """Step E3: per-basin scores + scatter plots (family_basin_analysis.py) from this summary's outputs."""
+    tests = {}
+    for test in cfg['test_sets']:
+        test_models = [m for m in models if (m, test) in family]
+        if test_models:
+            tests[test] = test_models
+    member_config = next(iter(family.values()))[0]
+    return run_basin_analysis(cfg, out_dir, models, leads, tests, thr_labels, member_config)
+
+
+def main(config_path, reevaluate=False, reports_only=False, cumulative_only=False, basin_only=False):
     cfg = load_config(config_path)
     for key in ('models', 'test_sets'):
         if not all(isinstance(v, str) for v in cfg[key]):
@@ -436,6 +439,17 @@ def main(config_path, reevaluate=False, reports_only=False, cumulative_only=Fals
             wandb.log(_cumulative_wandb_log(cum_results))
             wandb.finish()
         print(f"\n[INFO] --cumulative-only completed. Outputs in: {out_dir}")
+        return
+
+    # --basin-only: just the per-basin analysis from nse_per_basin.csv + the flood_event_comparison CSVs
+    # already on disk, in its own W&B run
+    if basin_only:
+        basin_results = basin_analysis(cfg, family, models, leads, thr_labels, out_dir)
+        if cfg.get('use_wandb', False) and WANDB_AVAILABLE:
+            _wandb_init(cfg, f"{cfg['summary_name']}_basin_analysis", 'basin_analysis')
+            wandb.log(basin_wandb_log(basin_results))
+            wandb.finish()
+        print(f"\n[INFO] --basin-only completed. Outputs in: {os.path.join(out_dir, 'basin_analysis')}")
         return
 
     # --reports-only jobs get their own W&B run, logging progress as each (model, test period) finishes
@@ -551,6 +565,13 @@ def main(config_path, reevaluate=False, reports_only=False, cumulative_only=Fals
         print(f"[WARNING] Cumulative statistics failed: {e!r}")
         cum_results = {}
 
+    # Step E3: per-basin scores and scatter plots (never allowed to stop the rest of the summary)
+    try:
+        basin_results = basin_analysis(cfg, family, models, leads, thr_labels, out_dir)
+    except Exception as e:
+        print(f"[WARNING] Basin analysis failed: {e!r}")
+        basin_results = {'tables': {}, 'images': {}}
+
     availability_df = pd.DataFrame(availability)
     availability_df.to_csv(os.path.join(out_dir, 'availability.csv'), index=False)
 
@@ -561,6 +582,7 @@ def main(config_path, reevaluate=False, reports_only=False, cumulative_only=Fals
         for thr, df in stats_tables.items():
             log[f'median_stats_by_lead_{thr}'] = wandb.Table(dataframe=df)
         log.update(_cumulative_wandb_log(cum_results))
+        log.update(basin_wandb_log(basin_results))
         wandb.log(log)
         for test in cfg['test_sets']:
             for png in sorted(glob.glob(os.path.join(out_dir, f"test_{test}", "comparison_plots", "hydrograph_*.png"))):
@@ -581,6 +603,9 @@ if __name__ == "__main__":
     parser.add_argument("--cumulative-only", action="store_true",
                         help="Only compute the cumulative-lead event statistics from the existing "
                              "flood_event_comparison CSVs (no GPU, seconds) and log them to their own W&B run.")
+    parser.add_argument("--basin-only", action="store_true",
+                        help="Only the per-basin analysis (family_basin_analysis.py) from the existing "
+                             "nse_per_basin.csv / flood_event_comparison CSVs, logged to its own W&B run.")
     args = parser.parse_args()
     main(args.config, reevaluate=args.reevaluate, reports_only=args.reports_only,
-         cumulative_only=args.cumulative_only)
+         cumulative_only=args.cumulative_only, basin_only=args.basin_only)
