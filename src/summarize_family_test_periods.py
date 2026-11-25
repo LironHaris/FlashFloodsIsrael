@@ -446,9 +446,13 @@ def main(config_path, reevaluate=False, reports_only=False, cumulative_only=Fals
     if basin_only:
         basin_results = basin_analysis(cfg, family, models, leads, thr_labels, out_dir)
         if cfg.get('use_wandb', False) and WANDB_AVAILABLE:
-            _wandb_init(cfg, f"{cfg['summary_name']}_basin_analysis", 'basin_analysis')
-            wandb.log(basin_wandb_log(basin_results))
-            wandb.finish()
+            # The outputs are already on disk - a W&B failure (e.g. a revoked API key) must not fail the job
+            try:
+                _wandb_init(cfg, f"{cfg['summary_name']}_basin_analysis", 'basin_analysis')
+                wandb.log(basin_wandb_log(basin_results))
+                wandb.finish()
+            except Exception as e:
+                print(f"[WARNING] W&B logging failed ({e!r}) - outputs are on disk, not logged to W&B.")
         print(f"\n[INFO] --basin-only completed. Outputs in: {os.path.join(out_dir, 'basin_analysis')}")
         return
 
