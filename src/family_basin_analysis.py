@@ -18,9 +18,12 @@ Description: Per-basin analysis of one model family summary (summarize_family_te
                                                            predicted it), pooled over the test periods
                <thr>/<metric>_vs_<x>.png
                    metric (nse_median, recall, precision, cum_recall, cum_precision) against
-                   x (ari_ix_sav, area on a log axis, PC1): one panel per lead, a point per basin
-                   with its basin_no, and a side legend 'no: basin_id name'. Panel titles give n and
-                   Spearman rho / Pearson r with p-values (Pearson on unclipped values).
+                   x (ari_ix_sav, area, PC1): one panel per lead, a box per quartile of x (equal basin
+                   counts; tick = x range and n), each basin a jittered point with its basin_no on top.
+                   Panel titles give n and Spearman rho / Pearson r with p-values on the continuous x
+                   (Pearson on unclipped values).
+               <thr>/basins_legend.png
+                   The basin_no -> basin_id / name key for all plots and maps of this threshold.
                <thr>/map_<metric>.png
                    Map of Israel per metric: one panel per lead, each basin polygon filled by its value
                    (shared colorbar), largest basins drawn first so nested sub-basins stay visible, dashed
@@ -179,41 +182,67 @@ def build_basin_scores(cfg, out_dir, models, leads, tests, thr, member_config, n
     return pd.concat([scores, pd.DataFrame(metric_cols, index=scores.index)], axis=1)
 
 
-def _numbered_legend(fig, scores, x=None):
-    handles = [Line2D([], [], linestyle='none') for _ in range(len(scores))]
-    labels = [f"{no}: {bid} {name}".strip() for no, bid, name
-              in zip(scores['basin_no'], scores['basin_id'], scores['basin_name'])]
-    ncol = 1 if len(labels) <= 45 else 2
-    if x is None:
-        x = 0.80 if ncol == 1 else 0.70
-    fig.legend(handles, labels, loc='center left', bbox_to_anchor=(x, 0.5),
-               fontsize=6.3, frameon=True, facecolor='#ffffff', edgecolor='#e2e2e2', handlelength=0,
-               handletextpad=0, ncol=ncol, title='Basins', title_fontsize=8, borderaxespad=0.3)
-    return ncol
+def plot_basin_legend(scores, summary_name, thr, out_path):
+    """The basin_no -> basin_id / name key shared by all plots and maps of this threshold, as its own image
+    (columns of ~25 rows) so the plots don't each repeat it."""
+    rows = list(zip(scores['basin_no'], scores['basin_id'], scores['basin_name']))
+    per_col = 25
+    ncols = max(1, int(np.ceil(len(rows) / per_col)))
+    col_w, row_h = 4.3, 0.22
+    fig = plt.figure(figsize=(col_w * ncols + 0.4, row_h * min(len(rows), per_col) + 1.0), dpi=150,
+                     facecolor='#ffffff')
+    fig.suptitle(f"Basins ({summary_name}, {thr})", fontsize=11, fontweight='bold', color='#2c3e50',
+                 y=1 - 0.25 / fig.get_figheight())
+    top = 1 - 0.65 / fig.get_figheight()
+    step = row_h / fig.get_figheight()
+    for i, (no, bid, name) in enumerate(rows):
+        c, r = divmod(i, per_col)
+        x = (0.2 + c * col_w) / fig.get_figwidth()
+        y = top - r * step
+        fig.text(x, y, f"{no:>2}", fontsize=8, fontweight='bold', color='#37474f', ha='left', va='top',
+                 family='monospace')
+        fig.text(x + 0.3 / fig.get_figwidth(), y, f"{bid}  {name}", fontsize=7.5, color='#263238', ha='left',
+                 va='top')
+    fig.savefig(out_path, facecolor=fig.get_facecolor())
+    plt.close(fig)
+    return out_path
 
 
-def _corr_text(x, y):
-    """'Spearman ρ=…(p=…), Pearson r=…(p=…)' - Pearson on the true (unclipped) values, so outliers weigh in."""
-    if len(x) < 3 or np.ptp(x) == 0 or np.ptp(y) == 0:
-        return 'too few / constant values for correlation'
-    rho, p_rho = stats.spearmanr(x, y)
-    r, p_r = stats.pearsonr(x, y)
-    return f"Spearman ρ={rho:.2f} (p={p_rho:.2g}), Pearson r={r:.2f} (p={p_r:.2g})"
+def _quartile_groups(df, feature, n_bins=4):
+    """Splits df into up to n_bins equal-count groups of `feature` (fewer on ties / small n): list of
+    (sub_df, tick label 'lo–hi\\nn=k')."""
+    k = min(n_bins, len(df))
+    if k < 2 or df[feature].nunique() < 2:
+        bins = pd.Series(0, index=df.index)
+    else:
+        bins = pd.qcut(df[feature].rank(method='first'), k, labels=False)
+    integer = feature == 'area'
+    groups = []
+    for b in sorted(bins.unique()):
+        sub = df[bins == b]
+        lo, hi = sub[feature].min(), sub[feature].max()
+        fmt = (lambda v: f"{v:,.0f}") if integer else (lambda v: f"{v:.2g}")
+        groups.append((sub, f"{fmt(lo)}–{fmt(hi)}\nn={len(sub)}"))
+    return groups
 
 
 def plot_metric_vs_feature(scores, models, leads, metric, metric_title, feature, feature_title, log_x,
                            summary_name, thr, out_path, n_tests):
+    """One panel per lead: boxes of the metric over quartiles of the feature, each basin a jittered point
+    with its basin_no on top (key in basins_legend.png). Correlations use the continuous feature values."""
     colors = _lead_colors(models)
     lead_models = sorted(models, key=lambda m: leads[m])
     n = len(lead_models)
     ncols = 2 if n > 1 else 1
     nrows = int(np.ceil(n / ncols))
-    fig = plt.figure(figsize=(16, 4.6 * nrows + 1.2), dpi=150, facecolor="#fafafa")
-    ncol_legend = _numbered_legend(fig, scores)
-    right = 0.79 if ncol_legend == 1 else 0.69
+    fig_h = 4.6 * nrows + 1.9
+    fig = plt.figure(figsize=(12, fig_h), dpi=150, facecolor="#fafafa")
     axes = fig.subplots(nrows, ncols, squeeze=False)
-    fig.subplots_adjust(left=0.06, right=right, top=0.90, bottom=0.08, hspace=0.35, wspace=0.18)
+    fig.subplots_adjust(left=0.07, right=0.98, top=1 - 1.05 / fig_h, bottom=1.1 / fig_h, hspace=0.42,
+                        wspace=0.16)
     is_nse = metric == 'nse_median'
+    feature_label = feature_title.replace(' (log scale)', '')
+    any_partial = any_clipped = False
 
     for ax, model in zip(axes.flat, lead_models):
         lead = leads[model]
@@ -227,45 +256,74 @@ def plot_metric_vs_feature(scores, models, leads, metric, metric_title, feature,
             ax.text(0.5, 0.5, 'no data', transform=ax.transAxes, ha='center', va='center', color='#888888')
             ax.set_title(f"lead +{lead}h ({model})", fontsize=10)
             continue
-        y = df[col].to_numpy(dtype=float)
-        x = df[feature].to_numpy(dtype=float)
-        clipped = is_nse & (y < NSE_FLOOR)
-        y_draw = np.where(clipped, NSE_FLOOR, y)
-        partial = df['n_test_periods'].to_numpy() < n_tests
-        for sel_clip, marker in ((False, 'o'), (True, 'v')):
-            for sel_part in (False, True):
-                sel = (clipped == sel_clip) & (partial == sel_part)
-                if sel.any():
-                    ax.scatter(x[sel], y_draw[sel], s=30 if sel_clip else 26, marker=marker,
-                               facecolor='none' if sel_part else bright, edgecolor=dark,
-                               linewidth=1.1 if sel_part else 0.6, zorder=3)
-        handles = [Line2D([], [], marker='o', linestyle='none', markerfacecolor=bright, markeredgecolor=dark,
-                          label=f'all {n_tests} test periods')]
-        if partial.any():
-            handles.append(Line2D([], [], marker='o', linestyle='none', markerfacecolor='none',
-                                  markeredgecolor=dark, label=f'< {n_tests} test periods'))
-        if clipped.any():
-            handles.append(Line2D([], [], marker='v', linestyle='none', markerfacecolor=bright,
-                                  markeredgecolor=dark, label=f'NSE < {NSE_FLOOR:g} (drawn at {NSE_FLOOR:g})'))
-        ax.legend(handles=handles, loc='lower right', fontsize=7, frameon=True, framealpha=0.85,
-                  edgecolor='#e2e2e2')
-        for xi, yi, no in zip(x, y_draw, df['basin_no']):
-            ax.annotate(str(no), (xi, yi), xytext=(3, 3), textcoords='offset points', fontsize=6.3,
-                        color='#37474f', zorder=4)
-        ax.set_title(f"lead +{lead}h ({model}) — n={len(df)}\n{_corr_text(x, y)}", fontsize=9.5)
-        if log_x:
-            ax.set_xscale('log')
+        groups = _quartile_groups(df, feature)
+        box_vals = [np.maximum(g[col].to_numpy(dtype=float), NSE_FLOOR) if is_nse else g[col].to_numpy(dtype=float)
+                    for g, _ in groups]
+        bp = ax.boxplot(box_vals, positions=range(len(groups)), widths=0.55, showfliers=False,
+                        patch_artist=True, zorder=2)
+        for patch in bp['boxes']:
+            patch.set(facecolor=bright, alpha=0.28, edgecolor=dark, linewidth=0.9)
+        for part in ('whiskers', 'caps'):
+            for line in bp[part]:
+                line.set(color=dark, linewidth=0.9)
+        for line in bp['medians']:
+            line.set(color=dark, linewidth=1.8)
+        for pos, (g, _) in enumerate(groups):
+            y = g[col].to_numpy(dtype=float)
+            clipped = is_nse & (y < NSE_FLOOR)
+            y_draw = np.where(clipped, NSE_FLOOR, y)
+            partial = g['n_test_periods'].to_numpy() < n_tests
+            any_partial |= partial.any()
+            any_clipped |= clipped.any()
+            jitter = np.array([np.random.default_rng(int(no)).uniform(-0.2, 0.2) for no in g['basin_no']])
+            x = pos + jitter
+            for sel_clip, marker in ((False, 'o'), (True, 'v')):
+                for sel_part in (False, True):
+                    sel = (clipped == sel_clip) & (partial == sel_part)
+                    if sel.any():
+                        ax.scatter(x[sel], y_draw[sel], s=26, marker=marker,
+                                   facecolor='white' if sel_part else bright, edgecolor=dark,
+                                   linewidth=1.1 if sel_part else 0.6, zorder=3)
+            for xi, yi, no in zip(x, y_draw, g['basin_no']):
+                ax.annotate(str(no), (xi, yi), xytext=(3, 2), textcoords='offset points', fontsize=6,
+                            color='#37474f', zorder=4)
+        ax.set_xticks(range(len(groups)))
+        ax.set_xticklabels([label for _, label in groups], fontsize=8)
+        ax.set_xlim(-0.6, len(groups) - 0.4)
+        x_all = df[feature].to_numpy(dtype=float)
+        ax.set_title(f"lead +{lead}h ({model}) — n={len(df)}\n{_corr_text(x_all, df[col].to_numpy(dtype=float))}",
+                     fontsize=9.5)
         ax.set_ylim((NSE_FLOOR - 0.05, 1.02) if is_nse else (-0.05, 1.05))
-        ax.grid(True, linestyle=':', alpha=0.5, color='#b0b0b0')
-        ax.set_xlabel(feature_title, fontsize=9)
+        ax.grid(True, axis='y', linestyle=':', alpha=0.5, color='#b0b0b0')
+        ax.set_xlabel(f"{feature_label} — quartiles", fontsize=9)
         ax.set_ylabel(metric_title, fontsize=9)
     for ax in list(axes.flat)[n:]:
         ax.set_visible(False)
-    fig.suptitle(f"{metric_title} vs {feature_title} — per basin ({summary_name}, {thr})",
-                 fontsize=12, fontweight='bold', color='#2c3e50')
+    handles = [Line2D([], [], marker='o', linestyle='none', markerfacecolor='#9e9e9e', markeredgecolor='#424242',
+                      label=f'all {n_tests} test periods')]
+    if any_partial:
+        handles.append(Line2D([], [], marker='o', linestyle='none', markerfacecolor='white',
+                              markeredgecolor='#424242', label=f'< {n_tests} test periods'))
+    if any_clipped:
+        handles.append(Line2D([], [], marker='v', linestyle='none', markerfacecolor='#9e9e9e',
+                              markeredgecolor='#424242', label=f'NSE < {NSE_FLOOR:g} (drawn at {NSE_FLOOR:g})'))
+    handles.append(Line2D([], [], linestyle='none', label='number = basin_no (see basins_legend.png)'))
+    fig.legend(handles=handles, loc='lower center', bbox_to_anchor=(0.5, 0.005), ncol=len(handles),
+               fontsize=8, frameon=False)
+    fig.suptitle(f"{metric_title} vs {feature_label} — per basin\n({summary_name}, {thr})",
+                 fontsize=12, fontweight='bold', color='#2c3e50', y=1 - 0.12 / fig_h, va='top')
     fig.savefig(out_path, facecolor=fig.get_facecolor())
     plt.close(fig)
     return out_path
+
+
+def _corr_text(x, y):
+    """'Spearman ρ=…(p=…), Pearson r=…(p=…)' - Pearson on the true (unclipped) values, so outliers weigh in."""
+    if len(x) < 3 or np.ptp(x) == 0 or np.ptp(y) == 0:
+        return 'too few / constant values for correlation'
+    rho, p_rho = stats.spearmanr(x, y)
+    r, p_r = stats.pearsonr(x, y)
+    return f"Spearman ρ={rho:.2f} (p={p_rho:.2g}), Pearson r={r:.2f} (p={p_r:.2g})"
 
 
 def _lead_colors(models):
@@ -316,6 +374,8 @@ def run_basin_analysis(cfg, out_dir, models, leads, tests, thr_labels, member_co
                 png = plot_metric_map(scores, shapes, basemap, models, leads, metric, metric_title,
                                       cfg['summary_name'], thr, os.path.join(plot_dir, f"{name}.png"), len(tests))
                 results['images'][f"basin_analysis/{thr}/{name}"] = png
+        png = plot_basin_legend(scores, cfg['summary_name'], thr, os.path.join(plot_dir, 'basins_legend.png'))
+        results['images'][f"basin_analysis/{thr}/basins_legend"] = png
         print(f"[INFO] Basin analysis ({thr}): plots in {plot_dir}")
     return results
 
@@ -368,16 +428,14 @@ def plot_metric_map(scores, shapes, basemap, models, leads, metric, metric_title
     pad = 12_000
 
     lead_models = sorted(models, key=lambda m: leads[m])
-    # Panel width from the map's own aspect (Israel is ~3x taller than wide), legend in a fixed-width strip
+    # Panel width from the map's own aspect (Israel is ~3x taller than wide); basin key in basins_legend.png
     fig_h, axes_h_frac = 11.0, 0.78
     panel_w = fig_h * axes_h_frac * (maxx - minx + 2 * pad) / (maxy - miny + 2 * pad) + 0.25
-    legend_w = 3.2 if len(scores) <= 45 else 6.0
-    fig_w = panel_w * len(lead_models) + legend_w + 0.6
-    right = 1 - (legend_w + 0.2) / fig_w
+    fig_w = max(panel_w * len(lead_models) + 0.6, 9.0)  # wide enough for the bottom legend
+    right = 1 - 0.3 / fig_w
     fig = plt.figure(figsize=(fig_w, fig_h), dpi=150, facecolor="#fafafa")
     axes = fig.subplots(1, len(lead_models), squeeze=False)[0]
     fig.subplots_adjust(left=0.3 / fig_w, right=right, top=0.90, bottom=0.145, wspace=0.04)
-    _numbered_legend(fig, scores, x=right + 0.08 / fig_w)
     for ax, model in zip(axes, lead_models):
         col = f'{metric}_{leads[model]}h'
         ax.set_facecolor('#dfeaf2')  # sea
@@ -448,7 +506,7 @@ def wandb_log_dict(results):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Per-basin scores and scatter plots of one family summary "
+    parser = argparse.ArgumentParser(description="Per-basin scores, boxplots and maps of one family summary "
                                                  "(from its existing outputs).")
     parser.add_argument("--config", type=str, required=True, help="Family summary config "
                         "(configs/summarize_family_test_periods_*.yml)")
